@@ -1871,11 +1871,7 @@ fn load_mission_data(root: &Map<String, Value>) -> Result<MissionData, String> {
                     x => Some(*x),
                 })
                 .collect(),
-            barks: entry
-                .m_iHBarkerTextID
-                .iter()
-                .flat_map(|id| if *id != 0 { Some(*id) } else { None })
-                .collect(),
+            barks: entry.m_iHBarkerTextID.to_vec(),
         };
         task_defs.insert(task_id, task_def);
     }
