@@ -135,7 +135,18 @@ pub fn item_combination(
                 Severity::Warning,
                 format!("Costume item (slot {}) empty", pkt.iCostumeItemSlot),
             ))?;
+        // if item is already combined, the style item id will be in the higher 16 bits of the iOpt
+        let looks_item_non_combined_id = looks_item.appearance_id();
         let looks_item_stats = looks_item.get_stats()?;
+        let looks_item_non_combined_stats = if looks_item_non_combined_id == looks_item.id {
+            looks_item_stats
+        } else {
+            tdata_get().get_item_stats(looks_item_non_combined_id, looks_item.ty)?
+        };
+        let academy_level_zero = config_get().general.protocol.get()
+            == crate::net::FFProtocol::v1013
+            && looks_item_non_combined_id == looks_item.id
+            && looks_item_stats.required_level == 0;
         let looks_item_rarity = looks_item_stats.rarity.ok_or(FFError::build(
             Severity::Warning,
             format!("Costume item has no rarity: {:?}", looks_item),
@@ -164,8 +175,9 @@ pub fn item_combination(
         }
 
         let crocpot_data = tdata_get().get_crocpot_data(level_gap)?;
-        let cost = (looks_item_stats.buy_price * crocpot_data.price_multiplier_looks)
-            + (stats_item_stats.buy_price * crocpot_data.price_multiplier_stats);
+        // buy price of combined items is the uncombined style item's buy price
+        let cost = (stats_item_stats.buy_price * crocpot_data.price_multiplier_stats)
+            + (looks_item_non_combined_stats.buy_price * crocpot_data.price_multiplier_looks);
         if player.get_taros() < cost {
             return Err(FFError::build(
                 Severity::Warning,
@@ -187,8 +199,12 @@ pub fn item_combination(
             .unwrap()
             .unwrap();
 
-        let success_chance =
-            crocpot_data.base_chance * crocpot_data.rarity_diff_multipliers[rarity_gap as usize];
+        let success_chance = if academy_level_zero {
+            // uncombined academy items in the style slot with level 0 have 100% success chance
+            1.0
+        } else {
+            crocpot_data.base_chance * crocpot_data.rarity_diff_multipliers[rarity_gap as usize]
+        };
         let roll: f32 = random();
         let succeeded = roll < success_chance;
         if succeeded {

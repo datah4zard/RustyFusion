@@ -45,8 +45,12 @@ impl Item {
         self.expiry_time = Some(time);
     }
 
+    pub fn appearance_id(&self) -> i16 {
+        self.appearance_id.unwrap_or(self.id)
+    }
+
     pub fn set_appearance(&mut self, looks_item: &Item) {
-        self.appearance_id = Some(looks_item.id);
+        self.appearance_id = Some(looks_item.appearance_id());
     }
 
     pub fn split_items(from: &mut Option<Item>, mut quantity: u16) -> Option<Item> {
