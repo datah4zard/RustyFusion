@@ -640,7 +640,7 @@ impl TableData {
             ))?;
 
         // generate a rarity from the rarity weights. rarities start at 1
-        let rarity = (util::weighted_rand(&rarity_weights.Weights) + 1) as i32;
+        let mut available_rarities = Vec::new();
 
         // build a pool of eligible items
         let mut item_pool = Vec::new();
@@ -665,16 +665,12 @@ impl TableData {
                     .get(&item_ref_id.to_string())
                     .unwrap_or(&(item_stats.gender.unwrap_or(0) as i32));
 
-                // rarity checks
-                if item_rarity != 0 && !item_set.IgnoreRarity && rarity != item_rarity {
-                    return Ok(false);
-                }
-
                 // gender checks
                 if item_gender != 0 && !item_set.IgnoreGender && gender != item_gender {
                     return Ok(false);
                 }
 
+                available_rarities.push(item_rarity);
                 Ok(true)
             })();
             match eligible {
@@ -691,6 +687,27 @@ impl TableData {
             return Err(FFError::build(
                 Severity::Warning,
                 format!("Item pool was empty: id {}, gender {}", crate_id, gender),
+            ));
+        }
+
+        // Only draw rarities represented by gender-compatible items, including overrides.
+        let weights = eligible_rarity_weights(&rarity_weights.Weights, &available_rarities);
+        let rarity = if weights.iter().any(|w| *w > 0) {
+            (util::weighted_rand(&weights) + 1) as i32
+        } else {
+            1
+        };
+        item_pool = item_pool
+            .into_iter()
+            .zip(available_rarities)
+            .filter_map(|(id, item_rarity)| {
+                (item_set.IgnoreRarity || item_rarity == 0 || item_rarity == rarity).then_some(id)
+            })
+            .collect();
+        if item_pool.is_empty() {
+            return Err(FFError::build(
+                Severity::Warning,
+                format!("No eligible crate items for {}", crate_id),
             ));
         }
 
@@ -2604,4 +2621,18 @@ mod tests {
     fn test_load() {
         tdata_init().expect("Failed to load tabledata");
     }
+}
+
+fn eligible_rarity_weights(weights: &[i32], rarities: &[i32]) -> Vec<i32> {
+    weights
+        .iter()
+        .enumerate()
+        .map(|(index, weight)| {
+            if rarities.contains(&((index + 1) as i32)) {
+                (*weight).max(0)
+            } else {
+                0
+            }
+        })
+        .collect()
 }
