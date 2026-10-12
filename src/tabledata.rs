@@ -303,7 +303,13 @@ struct EggData {
     eggs: Vec<EggSpawnData>,
 }
 
+#[derive(Debug, Deserialize)]
+struct EventDrop {
+    MobDropID: i32,
+}
+
 struct DropData {
+    events: HashMap<i32, EventDrop>,
     crate_drop_chances: HashMap<i32, CrateDropChance>,
     crate_drop_types: HashMap<i32, CrateDropType>,
     crate_data: HashMap<i32, CrateData>,
@@ -640,7 +646,7 @@ impl TableData {
             ))?;
 
         // generate a rarity from the rarity weights. rarities start at 1
-        let rarity = (util::weighted_rand(&rarity_weights.Weights) + 1) as i32;
+        let mut available_rarities = Vec::new();
 
         // build a pool of eligible items
         let mut item_pool = Vec::new();
@@ -665,16 +671,12 @@ impl TableData {
                     .get(&item_ref_id.to_string())
                     .unwrap_or(&(item_stats.gender.unwrap_or(0) as i32));
 
-                // rarity checks
-                if item_rarity != 0 && !item_set.IgnoreRarity && rarity != item_rarity {
-                    return Ok(false);
-                }
-
                 // gender checks
                 if item_gender != 0 && !item_set.IgnoreGender && gender != item_gender {
                     return Ok(false);
                 }
 
+                available_rarities.push(item_rarity);
                 Ok(true)
             })();
             match eligible {
@@ -691,6 +693,27 @@ impl TableData {
             return Err(FFError::build(
                 Severity::Warning,
                 format!("Item pool was empty: id {}, gender {}", crate_id, gender),
+            ));
+        }
+
+        // Only draw rarities represented by gender-compatible items, including overrides.
+        let weights = eligible_rarity_weights(&rarity_weights.Weights, &available_rarities);
+        let rarity = if weights.iter().any(|w| *w > 0) {
+            (util::weighted_rand(&weights) + 1) as i32
+        } else {
+            1
+        };
+        item_pool = item_pool
+            .into_iter()
+            .zip(available_rarities)
+            .filter_map(|(id, item_rarity)| {
+                (item_set.IgnoreRarity || item_rarity == 0 || item_rarity == rarity).then_some(id)
+            })
+            .collect();
+        if item_pool.is_empty() {
+            return Err(FFError::build(
+                Severity::Warning,
+                format!("No eligible crate items for {}", crate_id),
             ));
         }
 
@@ -714,9 +737,6 @@ impl TableData {
     }
 
     pub fn get_mob_reward(&self, mob_type: i32) -> FFResult<Reward> {
-        let mut rng = thread_rng();
-        let mut reward = Reward::new(RewardCategory::Combat);
-
         let mapping = self
             .drop_data
             .mob_drop_data
@@ -726,13 +746,40 @@ impl TableData {
                 format!("No mob drop data for mob type {}", mob_type),
             ))?;
 
+        let mut reward = self.roll_mob_drop(mapping.MobDropID)?;
+        let event_id = config_get().shard.event_mode.get();
+        if event_id != 0 {
+            if let Some(event) = self.drop_data.events.get(&event_id) {
+                match self.roll_mob_drop(event.MobDropID) {
+                    Ok(extra) => {
+                        reward.taros = reward.taros.saturating_add(extra.taros);
+                        reward.fusion_matter = reward.fusion_matter.saturating_add(extra.fusion_matter);
+                        reward.nano_potions = reward.nano_potions.saturating_add(extra.nano_potions);
+                        reward.weapon_boosts = reward.weapon_boosts.saturating_add(extra.weapon_boosts);
+                        reward.items.extend(extra.items);
+                    }
+                    Err(e) => log_error(e),
+                }
+            } else {
+                log(
+                    Severity::Warning,
+                    &format!("Event {} has no mob drop assigned", event_id),
+                );
+            }
+        }
+        Ok(reward)
+    }
+
+    fn roll_mob_drop(&self, drop_id: i32) -> FFResult<Reward> {
+        let mut rng = thread_rng();
+        let mut reward = Reward::new(RewardCategory::Combat);
         let mob_drop = self
             .drop_data
             .mob_drops
-            .get(&mapping.MobDropID)
+            .get(&drop_id)
             .ok_or(FFError::build(
                 Severity::Warning,
-                format!("No mob drop for mob drop id {}", mapping.MobDropID),
+                format!("No mob drop for mob drop id {}", drop_id),
             ))?;
 
         let apply_misc_drop = |rng: &mut ThreadRng, reward: &mut Reward| {
@@ -775,7 +822,6 @@ impl TableData {
         };
 
         let apply_crate_drop = |rng: &mut ThreadRng, reward: &mut Reward| {
-            // TODO event crate drops
             let crate_drop_type = self
                 .drop_data
                 .crate_drop_types
@@ -2291,6 +2337,11 @@ fn load_drop_data() -> Result<DropData, String> {
     let item_sets_table = get_object(&drop_root, ITEM_SETS_TABLE_KEY)?;
     let item_references_table = get_object(&drop_root, ITEM_REFERENCES_TABLE_KEY)?;
 
+    let events = match drop_root.get("Events") {
+        Some(Value::Object(table)) => load_drop_table(table, "EventID")?,
+        None => HashMap::new(),
+        _ => return Err("Events must be an object".to_string()),
+    };
     // only Academy tabledata defines nano capsules
     let nano_capsules = match drop_root.get(NANO_CAPSULES_TABLE_KEY) {
         Some(Value::Object(table)) => load_nano_capsules(table)?,
@@ -2306,6 +2357,7 @@ fn load_drop_data() -> Result<DropData, String> {
     };
 
     Ok(DropData {
+        events,
         crate_drop_chances: load_drop_table(crate_drop_chances_table, CRATE_DROP_CHANCES_ID_KEY)?,
         crate_drop_types: load_drop_table(crate_drop_types_table, CRATE_DROP_TYPES_ID_KEY)?,
         crate_data: load_drop_table(crate_data_table, CRATE_DATA_ID_KEY)?,
@@ -2604,4 +2656,18 @@ mod tests {
     fn test_load() {
         tdata_init().expect("Failed to load tabledata");
     }
+}
+
+fn eligible_rarity_weights(weights: &[i32], rarities: &[i32]) -> Vec<i32> {
+    weights
+        .iter()
+        .enumerate()
+        .map(|(index, weight)| {
+            if rarities.contains(&((index + 1) as i32)) {
+                (*weight).max(0)
+            } else {
+                0
+            }
+        })
+        .collect()
 }
