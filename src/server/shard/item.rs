@@ -91,6 +91,7 @@ pub fn item_move(pkt: Packet, clients: &ClientMap, state: &mut ShardServerState)
             .send_packet(P_FE2CL_PC_VEHICLE_OFF_SUCC, &pkt);
     }
 
+    state.check_and_remove_expired_items(pc_id, SystemTime::now());
     Ok(())
 }
 
