@@ -110,6 +110,15 @@ monitor_interval = 5 # how long (seconds) between monitor updates
 
 [shard]
 
+#: u32
+taro_rate = 100 # default Taros reward percentage
+
+#: u32
+fusion_matter_rate = 100 # default FM reward percentage
+
+#: bool
+disable_group_reward_reduction = false # give each group member full Taros and FM when enabled
+
 #: String
 log_path = "shard.log" # path to log file, or blank for console logging only
 

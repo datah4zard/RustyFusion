@@ -3,7 +3,7 @@ use std::{cmp::min, time::SystemTime};
 use crate::{
     defines::*,
     entity::RewardData,
-    enums::{ItemLocation, ItemType, RewardCategory, RewardType},
+    enums::{BuffID, ItemLocation, ItemType, RewardCategory, RewardType},
     error::{FFError, FFResult},
     net::packet::*,
     tabledata::tdata_get,
@@ -377,6 +377,59 @@ impl Reward {
         }
     }
 
+    pub fn with_player_rates(self, player: &crate::entity::Player) -> Self {
+        self.apply_player_rates(player, 1.0, 1)
+    }
+
+    pub fn with_combat_rewards(
+        self,
+        player: &crate::entity::Player,
+        level_difference: i16,
+        group_size: usize,
+    ) -> Self {
+        self.apply_player_rates(player, mob_level_fm_factor(level_difference), group_size)
+    }
+
+    fn apply_player_rates(
+        mut self,
+        player: &crate::entity::Player,
+        level_effect: f64,
+        group_size: usize,
+    ) -> Self {
+        let bonus = nano_reward_multiplier(player, BuffID::RewardCash);
+        let scavenge = nano_reward_multiplier(player, BuffID::RewardBlob);
+        let group_reduction = !crate::config::config_get()
+            .shard
+            .disable_group_reward_reduction
+            .get();
+        let category = self.category as usize;
+        let taro_rate = player
+            .reward_data
+            .get_reward_rate(RewardType::Taros, category)
+            .unwrap_or(1.0);
+        let fm_rate = player
+            .reward_data
+            .get_reward_rate(RewardType::FusionMatter, category)
+            .unwrap_or(1.0);
+
+        let group_effect = if group_reduction {
+            1.0 / group_size.max(1) as f64
+        } else {
+            1.0
+        };
+        self.taros = (self.taros as f64 * taro_rate as f64 * bonus * group_effect) as u32;
+
+        let group_effect = if group_reduction {
+            group_fm_factor(group_size)
+        } else {
+            1.0
+        };
+        self.fusion_matter =
+            (self.fusion_matter as f64 * fm_rate as f64 * scavenge * level_effect * group_effect)
+                as u32;
+        self
+    }
+
     pub fn with_rates(mut self, reward_data: &RewardData) -> Self {
         let category = self.category as usize;
         let taros_factor = reward_data.get_reward_rate(RewardType::Taros, category);
@@ -388,5 +441,49 @@ impl Reward {
             self.fusion_matter = (self.fusion_matter as f32 * factor) as u32;
         }
         self
+    }
+}
+
+fn nano_reward_multiplier(player: &crate::entity::Player, buff_id: BuffID) -> f64 {
+    use crate::entity::Combatant;
+
+    if !player.has_buff(buff_id, None) {
+        return 1.0;
+    }
+
+    let boosted = player.get_active_nano_slot().is_some_and(|slot| {
+        let buff = match slot {
+            0 => BuffID::StimPakSlot1,
+            1 => BuffID::StimPakSlot2,
+            _ => BuffID::StimPakSlot3,
+        };
+        player.has_buff(buff, None)
+    });
+    if boosted {
+        1.23
+    } else {
+        1.2
+    }
+}
+
+fn mob_level_fm_factor(difference: i16) -> f64 {
+    match difference {
+        i16::MIN..=-3 => 1.2,
+        -2 => 1.1,
+        -1..=1 => 1.0,
+        2 => 0.899,
+        3 => 0.75,
+        4 => 0.5,
+        5 => 0.25,
+        _ => 0.0,
+    }
+}
+
+fn group_fm_factor(size: usize) -> f64 {
+    match size {
+        2 => 0.875,
+        3 => 0.75,
+        4 => 0.688,
+        _ => 1.0,
     }
 }
