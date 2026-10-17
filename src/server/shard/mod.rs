@@ -168,6 +168,7 @@ pub fn handle_packet<'a>(
             P_CL2FE_REQ_PC_ATTACK_CHARs => combat::pc_attack_pcs(pkt, &clients, state),
             P_CL2FE_REQ_NANO_SKILL_USE => combat::nano_skill_use(pkt, &clients, state),
             //
+            P_CL2FE_REQ_ITEM_USE => crate::boosters::use_item(pkt, &clients, state),
             P_CL2FE_REQ_ITEM_MOVE => item::item_move(pkt, &clients, state),
             P_CL2FE_REQ_PC_ITEM_DELETE => item::item_delete(pkt, clients.get_sender(), state),
             P_CL2FE_REQ_PC_ITEM_COMBINATION => {

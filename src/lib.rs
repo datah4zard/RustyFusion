@@ -40,6 +40,7 @@ macro_rules! log_if_none {
     };
 }
 
+pub mod boosters;
 pub mod defines;
 pub mod enums;
 pub mod error;
