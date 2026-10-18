@@ -110,6 +110,9 @@ monitor_interval = 5 # how long (seconds) between monitor updates
 
 [shard]
 
+#: bool
+drop_fixes_enabled = false # apply optional drop fixes after the configured table-data patches
+
 #: String
 log_path = "shard.log" # path to log file, or blank for console logging only
 

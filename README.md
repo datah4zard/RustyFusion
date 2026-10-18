@@ -163,3 +163,18 @@ Although RustyFusion tries to match the front-end behavior of OpenFusion closely
 RustyFusion is a **personal project that I work on in my free time**, so it is unlikely to progress at a constant pace.
 
 Feel free to email or DM me if you have any questions about the project or are interested in contributing.
+
+
+## Optional drop fixes
+
+The table-data drop fixes are disabled by default. Enable them with:
+
+```toml
+[shard]
+drop_fixes_enabled = true
+```
+
+This appends `0104-fixes` to the patch list and, when the `1013` patch is enabled,
+`1013-fixes`. Required protocol patches and `general.enabled_patches` still apply
+when the option is off. The fix files come from the configured table-data
+repository's `patch/` directory.

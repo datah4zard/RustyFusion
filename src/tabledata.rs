@@ -951,15 +951,18 @@ fn load_json(filename: &str) -> Result<Map<String, Value>, String> {
     let mut json = serde_json::from_str(&file)
         .map_err(|e| format!("Couldn't parse {:?} as JSON: {}", path, e))?;
 
-    let mut patches = match config.protocol.get() {
-        FFProtocol::v0104 => vec!["0104-fixes"],
-        FFProtocol::v1013 => vec!["1013", "1013-fixes"],
+    let mut patches = Vec::new();
+    if config.protocol.get() == FFProtocol::v1013 {
+        patches.push("1013".to_string());
     }
-    .into_iter()
-    .map(|s| s.to_string())
-    .collect::<Vec<String>>();
-
     patches.extend(config.enabled_patches.get());
+
+    if config_get().shard.drop_fixes_enabled.get() {
+        patches.push("0104-fixes".to_string());
+        if patches.iter().any(|patch| patch == "1013") {
+            patches.push("1013-fixes".to_string());
+        }
+    }
 
     for patch in &patches {
         let patch_path = std::path::Path::new(&tdata_path)
