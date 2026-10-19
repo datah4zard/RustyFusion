@@ -110,6 +110,10 @@ monitor_interval = 5 # how long (seconds) between monitor updates
 
 [shard]
 
+#: i32
+event_mode = 0 # event ID in drops.json; zero disables event rewards
+
+
 #: String
 log_path = "shard.log" # path to log file, or blank for console logging only
 
