@@ -11,7 +11,7 @@ use crate::{
     config::config_get,
     defines::*,
     entity::{Combatant, Egg, Entity, EntityID, Group, Player, Slider, NPC},
-    enums::ItemType,
+    enums::ItemLocation,
     error::{log, log_if_failed, FFError, FFResult, Severity},
     helpers,
     item::Item,
@@ -248,47 +248,76 @@ impl ShardServerState {
         ))
     }
 
-    pub fn check_for_expired_vehicles(&mut self, time: SystemTime) {
-        log(Severity::Debug, "Checking for expired vehicles");
+    pub fn check_for_expired_items(&mut self, time: SystemTime) {
         let pc_ids: Vec<i32> = self.entity_map.get_player_ids().collect();
-        let mut pc_ids_dismounted = Vec::with_capacity(pc_ids.len());
         for pc_id in pc_ids {
-            let player = self.get_player_mut(pc_id).unwrap();
-            for (location, slot_num) in player.find_items_any(|item| item.ty == ItemType::Vehicle) {
-                let vehicle_slot = player.get_item_mut(location, slot_num).unwrap();
-                if let Some(expiry_time) = vehicle_slot.unwrap().get_expiry_time() {
-                    if time > expiry_time {
-                        vehicle_slot.take();
+            self.check_and_remove_expired_items(pc_id, time);
+        }
+    }
 
-                        // dismount
-                        let client = player.get_client().unwrap();
-                        if player.vehicle_speed.is_some() {
-                            player.vehicle_speed = None;
-                            let pkt = sP_FE2CL_PC_VEHICLE_OFF_SUCC::default();
-                            client.send_packet(P_FE2CL_PC_VEHICLE_OFF_SUCC, &pkt);
-                            pc_ids_dismounted.push(pc_id);
-                        }
-
-                        // delete
-                        if let Some(pkt) = log_if_failed(
-                            PacketBuilder::new(P_FE2CL_PC_DELETE_TIME_LIMIT_ITEM)
-                                .with(&sP_FE2CL_PC_DELETE_TIME_LIMIT_ITEM { iItemListCount: 1 })
-                                .with(&sTimeLimitItemDeleteInfo2CL {
-                                    eIL: location as i32,
-                                    iSlotNum: slot_num as i32,
-                                })
-                                .build(),
-                        ) {
-                            client.send_payload(pkt);
-                        }
-                    }
+    pub fn check_and_remove_expired_items(&mut self, pc_id: i32, time: SystemTime) {
+        let remove_bank_items = config_get().shard.remove_expired_items_from_bank.get();
+        let player = self.get_player_mut(pc_id).unwrap();
+        // Registered trade stacks must remain intact until the trade finishes.
+        if player.trade_id.is_some() {
+            return;
+        }
+        let expired = player.find_items_any(|item| item.has_expired(time));
+        let mut equip_changes = Vec::new();
+        let mut dismounted = false;
+        for (location, slot) in expired {
+            if location == ItemLocation::Bank && !remove_bank_items {
+                continue;
+            }
+            if player.set_item(location, slot, None).is_err() {
+                continue;
+            }
+            // Bank items are removed silently, as in OpenFusion.
+            if location == ItemLocation::Bank {
+                continue;
+            }
+            let client = player.get_client().unwrap();
+            if location == ItemLocation::Equip {
+                equip_changes.push(slot);
+                if slot == EQUIP_SLOT_VEHICLE as usize && player.vehicle_speed.take().is_some() {
+                    dismounted = true;
+                    client.send_packet(
+                        P_FE2CL_PC_VEHICLE_OFF_SUCC,
+                        &sP_FE2CL_PC_VEHICLE_OFF_SUCC::default(),
+                    );
                 }
             }
+            if let Some(packet) = log_if_failed(
+                PacketBuilder::new(P_FE2CL_PC_DELETE_TIME_LIMIT_ITEM)
+                    .with(&sP_FE2CL_PC_DELETE_TIME_LIMIT_ITEM { iItemListCount: 1 })
+                    .with(&sTimeLimitItemDeleteInfo2CL {
+                        eIL: location as i32,
+                        iSlotNum: slot as i32,
+                    })
+                    .build(),
+            ) {
+                client.send_payload(packet);
+            }
+            client.send_packet(
+                P_FE2CL_REP_PC_ITEM_DELETE_SUCC,
+                &sP_FE2CL_REP_PC_ITEM_DELETE_SUCC {
+                    eIL: location as i32,
+                    iSlotNum: slot as i32,
+                },
+            );
+            if location == ItemLocation::Equip {
+                helpers::send_equip_change(&client, pc_id, slot as i32, None);
+            }
         }
-
-        for pc_id in pc_ids_dismounted {
-            let player = self.get_player(pc_id).unwrap();
-            helpers::broadcast_state(pc_id, player.get_state_bit_flag(), self);
+        let flags = player.get_state_bit_flag();
+        for slot in equip_changes {
+            self.entity_map
+                .for_each_around(EntityID::Player(pc_id), |client| {
+                    helpers::send_equip_change(client, pc_id, slot as i32, None);
+                });
+        }
+        if dismounted {
+            helpers::broadcast_state(pc_id, flags, self);
         }
     }
 

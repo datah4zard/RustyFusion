@@ -1,4 +1,7 @@
-use rand::{rngs::ThreadRng, Rng};
+use rand::{
+    rngs::{StdRng, ThreadRng},
+    Rng, SeedableRng,
+};
 use uuid::Uuid;
 
 use crate::{
@@ -7,7 +10,7 @@ use crate::{
     entity::{Combatant, Entity, EntityID, Player},
     enums::*,
     error::*,
-    item::{Item, RewardItem},
+    item::{Item, Reward, RewardItem},
     nano::Nano,
     net::{
         packet::{PacketID::*, *},
@@ -340,7 +343,13 @@ pub fn send_announcement(
     Ok(())
 }
 
-pub fn give_defeat_rewards(player: &mut Player, defeated_type: i32, rng: &mut ThreadRng) {
+pub fn give_defeat_rewards(
+    player: &mut Player,
+    defeated_type: i32,
+    rng: &mut impl Rng,
+    group_size: usize,
+    rolled_reward: &Reward,
+) {
     let active_task_id = player.mission_journal.get_active_task_id().unwrap_or(0);
     let client = player.get_client().unwrap();
     let mut item_rewards = Vec::new();
@@ -414,44 +423,42 @@ pub fn give_defeat_rewards(player: &mut Player, defeated_type: i32, rng: &mut Th
         }
     }
 
-    let mut gained_taros = 0;
-    let mut gained_fm = 0;
-    let mut gained_potions = 0;
-    let mut gained_boosts = 0;
-    match tdata_get()
-        .get_mob_reward(defeated_type)
-        .map(|r| r.with_rates(&player.reward_data))
-    {
-        Ok(reward) => {
-            gained_taros = reward.taros;
-            gained_fm = reward.fusion_matter;
-            gained_potions = reward.nano_potions;
-            gained_boosts = reward.weapon_boosts;
-            for item in reward.items {
-                if let Ok(slot) = player.find_free_slot(ItemLocation::Inven) {
-                    player
-                        .set_item(ItemLocation::Inven, slot, Some(item))
-                        .unwrap();
-
-                    let item_reward = RewardItem::Normal {
-                        item: Some(item),
-                        slot_num: slot,
-                    };
-
-                    item_rewards.push(item_reward);
-                }
-            }
+    let reward = rolled_reward.clone().with_combat_rewards(
+        player,
+        player.get_level()
+            - tdata_get()
+                .get_npc_stats(defeated_type)
+                .map(|s| s.level)
+                .unwrap_or(player.get_level()),
+        group_size,
+    );
+    let gained_taros = reward.taros;
+    let gained_fm = reward.fusion_matter;
+    let gained_potions = reward.nano_potions;
+    let gained_boosts = reward.weapon_boosts;
+    for item in reward.items {
+        if let Ok(slot) = player.find_free_slot(ItemLocation::Inven) {
+            player
+                .set_item(ItemLocation::Inven, slot, Some(item))
+                .unwrap();
+            item_rewards.push(RewardItem::Normal {
+                item: Some(item),
+                slot_num: slot,
+            });
         }
-        Err(e) => log_error(e),
     }
 
     let mut reward_pkt =
         PacketBuilder::new(P_FE2CL_REP_REWARD_ITEM).with(&sP_FE2CL_REP_REWARD_ITEM {
-            m_iCandy: player.set_taros(player.get_taros() + gained_taros) as i32,
-            m_iFusionMatter: player.set_fusion_matter(player.get_fusion_matter() + gained_fm)
+            m_iCandy: player.set_taros(player.get_taros().saturating_add(gained_taros)) as i32,
+            m_iFusionMatter: player
+                .set_fusion_matter(player.get_fusion_matter().saturating_add(gained_fm))
                 as i32,
-            m_iBatteryN: player.set_nano_potions(player.get_nano_potions() + gained_potions) as i32,
-            m_iBatteryW: player.set_weapon_boosts(player.get_weapon_boosts() + gained_boosts)
+            m_iBatteryN: player
+                .set_nano_potions(player.get_nano_potions().saturating_add(gained_potions))
+                as i32,
+            m_iBatteryW: player
+                .set_weapon_boosts(player.get_weapon_boosts().saturating_add(gained_boosts))
                 as i32,
             iItemCnt: item_rewards.len() as i8,
             iFatigue: 100,
@@ -476,28 +483,50 @@ pub fn on_mob_defeated(
     state: &mut ShardServerState,
     rng: &mut ThreadRng,
 ) -> FFResult<()> {
-    let defeated_type = state.get_npc(npc_id).unwrap().ty;
-    if let EntityID::Player(pc_id) = defeater_id {
-        let player = state.get_player_mut(pc_id)?;
-        give_defeat_rewards(player, defeated_type, rng);
-    }
-
+    let defeated_type = state.get_npc(npc_id)?.ty;
     let defeater = state.get_combatant(defeater_id)?;
+    let position = defeater.get_position();
+    let instance = defeater.get_chunk_coords().i;
+    let mut recipients = std::collections::HashSet::new();
+    if let EntityID::Player(pc_id) = defeater_id {
+        recipients.insert(pc_id);
+    }
     if let Some(group_id) = defeater.get_group_id() {
-        let position = defeater.get_position();
-        let group = state.groups.get(&group_id).unwrap().clone();
-        for eid in group.get_member_ids() {
-            if let EntityID::Player(member_pc_id) = *eid {
-                if defeater_id == *eid {
-                    // already rewarded
-                    continue;
-                }
-                let player = state.get_player_mut(member_pc_id).unwrap();
-                if player.get_position().distance_to(&position) < RANGE_GROUP_PARTICIPATE {
-                    give_defeat_rewards(player, defeated_type, rng);
+        if let Some(group) = state.groups.get(&group_id) {
+            for member in group.get_member_ids() {
+                if let EntityID::Player(pc_id) = *member {
+                    let player = state.get_player(pc_id)?;
+                    if player.instance_id == instance
+                        && player.get_position().distance_to(&position) <= RANGE_GROUP_PARTICIPATE
+                    {
+                        recipients.insert(pc_id);
+                    }
                 }
             }
         }
+    }
+    if recipients.is_empty() {
+        return Ok(());
+    }
+    let group_size = recipients.len();
+    let rolled_reward = match tdata_get().get_mob_reward(defeated_type) {
+        Ok(reward) => reward,
+        Err(error) => {
+            log_error(error);
+            Reward::new(RewardCategory::Combat)
+        }
+    };
+    let seed: u64 = rng.gen();
+    for pc_id in recipients {
+        let player = state.get_player_mut(pc_id)?;
+        let mut shared_rng = StdRng::seed_from_u64(seed);
+        give_defeat_rewards(
+            player,
+            defeated_type,
+            &mut shared_rng,
+            group_size,
+            &rolled_reward,
+        );
     }
     Ok(())
 }
