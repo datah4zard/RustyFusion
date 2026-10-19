@@ -510,12 +510,14 @@ pub fn task_end(pkt: Packet, clients: &ClientMap, state: &mut ShardServerState) 
         if let Some(reward_id) = task_def.succ_reward {
             match tdata_get()
                 .get_mission_reward(reward_id)
-                .map(|r| r.with_rates(&player.reward_data))
+                .map(|r| r.with_player_rates(player))
             {
                 Err(e) => log_error(e),
                 Ok(reward) => {
-                    let taros_new = player.get_taros() + reward.taros;
-                    let fm_new = player.get_fusion_matter() + reward.fusion_matter;
+                    let taros_new = player.get_taros().saturating_add(reward.taros);
+                    let fm_new = player
+                        .get_fusion_matter()
+                        .saturating_add(reward.fusion_matter);
                     let mut reward_pkt = PacketBuilder::new(P_FE2CL_REP_REWARD_ITEM).with(
                         &sP_FE2CL_REP_REWARD_ITEM {
                             m_iCandy: player.set_taros(taros_new) as i32,

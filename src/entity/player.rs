@@ -472,9 +472,21 @@ impl Player {
     pub fn new(uid: i64, slot_num: usize) -> Self {
         let start_level = 1;
         let stats = tdata_get().get_player_stats(start_level).unwrap();
+        let mut reward_data = RewardData::default();
+        reward_data.set_reward_rate(
+            RewardType::Taros,
+            RewardCategory::All,
+            config_get().shard.taro_rate.get() as f32,
+        );
+        reward_data.set_reward_rate(
+            RewardType::FusionMatter,
+            RewardCategory::All,
+            config_get().shard.fusion_matter_rate.get() as f32,
+        );
         Self {
             uid,
             slot_num,
+            reward_data,
             level: start_level,
             hp: stats.max_hp as i32,
             perms: CN_ACCOUNT_LEVEL__USER as i16,
