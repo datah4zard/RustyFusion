@@ -1,0 +1,3 @@
+DELETE FROM RaceRankings WHERE PlayerUID NOT IN (SELECT PlayerID FROM Players);
+ALTER TABLE RaceRankings ADD CONSTRAINT RaceRankingsPlayerFK
+    FOREIGN KEY (PlayerUID) REFERENCES Players(PlayerID) ON DELETE CASCADE;

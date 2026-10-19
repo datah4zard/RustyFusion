@@ -316,6 +316,7 @@ struct DropData {
     item_refs: HashMap<i32, ItemReference>,
     nano_capsules: HashMap<i16, i16>,
     code_items: HashMap<String, Vec<Item>>,
+    racing: HashMap<i32, crate::racing::RaceInfo>,
 }
 
 struct PathData {
@@ -348,6 +349,19 @@ impl TableData {
             drop_data: load_drop_data().map_err(|e| format!("Error loading drop data: {}", e))?,
             path_data: load_path_data().map_err(|e| format!("Error loading path data: {}", e))?,
             egg_data: load_egg_data().map_err(|e| format!("Error loading egg data: {}", e))?,
+        })
+    }
+
+    pub fn get_race_info(&self, map_num: u32) -> FFResult<&crate::racing::RaceInfo> {
+        let ep_id = self
+            .get_map_data(map_num)?
+            .ep_id
+            .ok_or_else(|| FFError::build(Severity::Warning, "Map has no race".into()))?;
+        self.drop_data.racing.get(&(ep_id as i32)).ok_or_else(|| {
+            FFError::build(
+                Severity::Warning,
+                format!("No racing data for EP {}", ep_id),
+            )
         })
     }
 
@@ -2334,6 +2348,7 @@ fn load_drop_data() -> Result<DropData, String> {
         item_refs,
         nano_capsules,
         code_items,
+        racing: crate::racing::load_races(&drop_root)?,
     })
 }
 

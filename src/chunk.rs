@@ -435,6 +435,16 @@ impl EntityMap {
         // }
     }
 
+    /// Replay nearby entities after an in-instance teleport, including same-chunk moves.
+    pub fn reload_player_chunks(&mut self, pc_id: i32) {
+        let id = EntityID::Player(pc_id);
+        let chunk = self.registry[&id].entity.get_chunk_coords();
+        self.update(id, None, true);
+        self.update(id, Some(chunk), true);
+        // Removing the last player briefly queued this instance for cleanup.
+        self.instances_to_cleanup.remove(&chunk.i);
+    }
+
     pub fn set_tick(&mut self, id: EntityID, tick_mode: TickMode) -> FFResult<()> {
         let entry = self.registry.get_mut(&id).ok_or(FFError::build(
             Severity::Warning,

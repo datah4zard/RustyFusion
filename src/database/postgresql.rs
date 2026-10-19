@@ -108,6 +108,18 @@ impl PostgresDatabase {
             .await?;
         }
 
+        // Add racing storage to existing databases as well as new ones.
+        Self::exec(&mut db_client, "ensure_race_rankings", &[]).await?;
+        // Add cascading character deletion to existing racing tables.
+        let has_cascade: bool = db_client.query_one(
+            "SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'racerankings'::regclass
+             AND confrelid = 'players'::regclass AND contype = 'f' AND confdeltype = 'c')",
+            &[],
+        ).await?.get(0);
+        if !has_cascade {
+            Self::exec(&mut db_client, "migrations/race_rankings_foreign_key", &[]).await?;
+        }
+
         Ok(Self {
             pool,
             config: db_config,
@@ -438,16 +450,16 @@ impl PostgresDatabase {
             };
 
             let item: Option<Item> = item_raw.try_into_proto()?;
-            if item.is_some_and(|item| {
-                item.get_expiry_time()
-                    .is_some_and(|et| et < SystemTime::now())
-            }) {
+            let (loc, local_slot) = util::slot_num_to_loc_and_slot_num(slot_num)?;
+            if (loc != crate::enums::ItemLocation::Bank
+                || config_get().shard.remove_expired_items_from_bank.get())
+                && item.is_some_and(|item| item.has_expired(SystemTime::now()))
+            {
                 // item is expired; skip it
                 continue;
             }
 
-            let (loc, slot_num) = util::slot_num_to_loc_and_slot_num(slot_num)?;
-            player.set_item(loc, slot_num, item)?;
+            player.set_item(loc, local_slot, item)?;
         }
 
         let quest_items = Self::query(client, "load_quest_items", &[&pc_uid]).await?;
@@ -549,6 +561,40 @@ impl PostgresDatabase {
 }
 #[async_trait]
 impl DbImpl for PostgresDatabase {
+    async fn post_race_ranking(&self, ranking: &crate::racing::RaceRanking) -> FFResult<()> {
+        let mut client = self.get_client().await?;
+        Self::exec(
+            &mut client,
+            "post_race_ranking",
+            &[
+                &ranking.player_uid,
+                &ranking.ep_id,
+                &ranking.score,
+                &ranking.pods,
+                &ranking.seconds,
+                &ranking.timestamp,
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+    async fn get_top_race_ranking(
+        &self,
+        pc_uid: BigInt,
+        ep_id: Int,
+    ) -> FFResult<Option<crate::racing::RaceRanking>> {
+        let client = self.get_client().await?;
+        let rows = Self::query(&client, "get_top_race_ranking", &[&pc_uid, &ep_id]).await?;
+        Ok(rows.first().map(|row| crate::racing::RaceRanking {
+            player_uid: row.get("PlayerUID"),
+            ep_id: row.get("EPID"),
+            score: row.get("Score"),
+            pods: row.get("Pods"),
+            seconds: row.get("Seconds"),
+            timestamp: row.get("Timestamp"),
+        }))
+    }
+
     async fn get_db_version(&self) -> FFResult<Int> {
         let client = self.get_client().await?;
         let rows = Self::query(&client, "get_db_version", &[]).await?;

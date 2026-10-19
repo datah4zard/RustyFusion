@@ -40,6 +40,7 @@ macro_rules! log_if_none {
     };
 }
 
+pub mod boosters;
 pub mod defines;
 pub mod enums;
 pub mod error;
@@ -63,6 +64,7 @@ pub mod item;
 pub mod mission;
 pub mod nano;
 pub mod path;
+pub mod racing;
 pub mod scripting;
 pub mod skills;
 pub mod trade;

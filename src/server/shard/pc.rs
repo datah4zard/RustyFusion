@@ -271,15 +271,25 @@ pub fn pc_loading_complete(
 
     let resp = sP_FE2CL_REP_PC_LOADING_COMPLETE_SUCC { iPC_ID: unused!() };
     let pc_id = clients.get_sender().get_player_id()?;
-    let player = state.get_player(pc_id)?;
+    let player = state.get_player_mut(pc_id)?;
+    if player
+        .race
+        .as_ref()
+        .is_some_and(|r| r.instance != player.instance_id)
+    {
+        player.race = None;
+    }
+    let preserve_race_pods = player.race.is_some();
     let map_num = player.instance_id.map_num;
     let chunk = player.get_chunk_coords();
-    state.entity_map.update(player.get_id(), Some(chunk), true);
+    state
+        .entity_map
+        .update(EntityID::Player(pc_id), Some(chunk), true);
     let client = clients.get_sender();
     client.send_packet(P_FE2CL_REP_PC_LOADING_COMPLETE_SUCC, &resp);
 
     // map info sync
-    if map_num != ID_OVERWORLD {
+    if map_num != ID_OVERWORLD && !preserve_race_pods {
         let map_data = tdata_get().get_map_data(map_num)?;
         let x_min = map_data.map_square.0 * MAP_SQUARE_SIZE;
         let y_min = map_data.map_square.1 * MAP_SQUARE_SIZE;

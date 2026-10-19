@@ -652,7 +652,7 @@ pub fn gm_reward_rate(
 
     if pkt.iGetSet != 0 {
         let reward_type: RewardType = pkt.iRewardType.try_into()?;
-        let rate_percent = pkt.iSetRateValue as f32;
+        let rate_percent = pkt.iSetRateValue as f64;
         let category: RewardCategory = (pkt.iRewardRateIndex as usize).try_into()?;
         player
             .reward_data

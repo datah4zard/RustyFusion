@@ -227,10 +227,10 @@ impl PlayerInventory {
 
 #[derive(Debug, Clone, Copy)]
 struct RewardRates {
-    combat: f32,
-    missions: f32,
-    eggs: f32,
-    racing: f32,
+    combat: f64,
+    missions: f64,
+    eggs: f64,
+    racing: f64,
 }
 impl Default for RewardRates {
     fn default() -> Self {
@@ -249,7 +249,7 @@ pub struct RewardData {
     fusion_matter: RewardRates,
 }
 impl RewardData {
-    pub fn set_reward_rate(&mut self, reward_type: RewardType, category: RewardCategory, val: f32) {
+    pub fn set_reward_rate(&mut self, reward_type: RewardType, category: RewardCategory, val: f64) {
         let reward_rates = match reward_type {
             RewardType::Taros => &mut self.taros,
             RewardType::FusionMatter => &mut self.fusion_matter,
@@ -270,7 +270,7 @@ impl RewardData {
         *rate = val / 100.0; // val is in percent
     }
 
-    pub fn get_reward_rate(&self, reward_type: RewardType, category: usize) -> FFResult<f32> {
+    pub fn get_reward_rate(&self, reward_type: RewardType, category: usize) -> FFResult<f64> {
         let reward_rates = match reward_type {
             RewardType::Taros => &self.taros,
             RewardType::FusionMatter => &self.fusion_matter,
@@ -294,10 +294,10 @@ impl RewardData {
         };
         [
             unused!(),
-            reward_rates.combat,
-            reward_rates.missions,
-            reward_rates.eggs,
-            reward_rates.racing,
+            reward_rates.combat as f32,
+            reward_rates.missions as f32,
+            reward_rates.eggs as f32,
+            reward_rates.racing as f32,
         ]
     }
 }
@@ -438,6 +438,7 @@ pub struct Player {
     pub target: Option<EntityID>,
     pub freechat_muted: bool,
     pub reward_data: RewardData,
+    pub race: Option<crate::racing::RaceState>,
     position: Position,
     rotation: i32,
     buffs: BuffContainer,
@@ -472,9 +473,21 @@ impl Player {
     pub fn new(uid: i64, slot_num: usize) -> Self {
         let start_level = 1;
         let stats = tdata_get().get_player_stats(start_level).unwrap();
+        let mut reward_data = RewardData::default();
+        reward_data.set_reward_rate(
+            RewardType::Taros,
+            RewardCategory::All,
+            config_get().shard.taro_rate.get() as f64,
+        );
+        reward_data.set_reward_rate(
+            RewardType::FusionMatter,
+            RewardCategory::All,
+            config_get().shard.fusion_matter_rate.get() as f64,
+        );
         Self {
             uid,
             slot_num,
+            reward_data,
             level: start_level,
             hp: stats.max_hp as i32,
             perms: CN_ACCOUNT_LEVEL__USER as i16,

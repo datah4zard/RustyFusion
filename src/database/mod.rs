@@ -187,6 +187,8 @@ macro_rules! define_db_api {
 }
 
 define_db_api! {
+    post_race_ranking(&self, ranking: &crate::racing::RaceRanking) -> ();
+    get_top_race_ranking(&self, pc_uid: BigInt, ep_id: Int) -> Option<crate::racing::RaceRanking>;
     get_db_version(&self) -> Int;
     get_protocol_version(&self) -> Int;
     find_account_from_username(&self, username: &str) -> Option<Account>;
