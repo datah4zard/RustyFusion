@@ -70,15 +70,17 @@ pub fn npc_bark(pkt: Packet, client: &FFClient, state: &mut ShardServerState) ->
         if let EntityID::NPC(npc_id) = npc_id {
             let npc = state.get_npc(npc_id).unwrap();
             let npc_stats = tdata_get().get_npc_stats(npc.ty).unwrap();
-            if npc_stats.bark_type.is_some_and(|bt| bt <= barks.len()) {
-                compatible_barks.push((npc_id, npc_stats.bark_type.unwrap() - 1));
+            if npc_stats.team == crate::enums::CombatantTeam::Mob {
+                continue;
+            }
+            if let Some(line) = compatible_bark(barks, npc_stats.bark_type) {
+                compatible_barks.push((npc_id, line));
             }
         }
     }
 
     let chosen_bark = compatible_barks.iter().choose(&mut rand::thread_rng());
-    if let Some(&(npc_id, bark_idx)) = chosen_bark {
-        let bark_id = barks[bark_idx];
+    if let Some(&(npc_id, bark_id)) = chosen_bark {
         let pkt = sP_FE2CL_REP_BARKER {
             iNPC_ID: npc_id,
             iMissionStringID: bark_id,
@@ -87,4 +89,12 @@ pub fn npc_bark(pkt: Packet, client: &FFClient, state: &mut ShardServerState) ->
     }
 
     Ok(())
+}
+
+fn compatible_bark(barks: &[i32], bark_type: Option<usize>) -> Option<i32> {
+    let index = bark_type?.checked_sub(1)?;
+    if index >= 4 {
+        return None;
+    }
+    barks.get(index).copied().filter(|id| *id != 0)
 }
