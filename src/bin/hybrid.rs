@@ -64,7 +64,7 @@ async fn main() -> FFResult<()> {
         Duration::from_secs(config.shard.login_server_update_interval.get()),
         false,
     );
-    let mut vehicle_timer = util::make_timer(Duration::from_secs(60), false);
+    let mut item_expiry_timer = util::make_timer(Duration::from_secs(60), false);
     let mut entity_timer = util::make_timer(
         Duration::from_millis(1000 / SHARD_TICKS_PER_SECOND as u64),
         false,
@@ -230,9 +230,9 @@ async fn main() -> FFResult<()> {
                 state.tick_garbage_collection();
                 state.tick_groups();
             }
-            _ = vehicle_timer.tick() => {
+            _ = item_expiry_timer.tick() => {
                 shard_state.lock().await
-                    .check_for_expired_vehicles(SystemTime::now());
+                    .check_for_expired_items(SystemTime::now());
             }
             _ = login_conn_timer.tick() => {
                 log_if_failed(shard::connect_to_login_server(&mut shard_server, &mut *shard_state.lock().await).await);

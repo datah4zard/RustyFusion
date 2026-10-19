@@ -30,9 +30,17 @@ pub fn item_move(pkt: Packet, clients: &ClientMap, state: &mut ShardServerState)
     let player = state.get_player_mut(pc_id)?;
 
     let location_from = pkt.eFrom.try_into()?;
+    let location_to = pkt.eTo.try_into()?;
+    if (location_from == ItemLocation::Equip && pkt.iFromSlotNum >= 9)
+        || (location_to == ItemLocation::Equip && pkt.iToSlotNum >= 9)
+    {
+        return Err(FFError::build(
+            Severity::Warning,
+            "Nanocom booster slots cannot be moved".into(),
+        ));
+    }
     let mut item_from = player.set_item(location_from, pkt.iFromSlotNum as usize, None)?;
 
-    let location_to = pkt.eTo.try_into()?;
     let mut item_to = player.set_item(location_to, pkt.iToSlotNum as usize, None)?;
 
     Item::transfer_items(&mut item_from, &mut item_to)?;
@@ -91,6 +99,7 @@ pub fn item_move(pkt: Packet, clients: &ClientMap, state: &mut ShardServerState)
             .send_packet(P_FE2CL_PC_VEHICLE_OFF_SUCC, &pkt);
     }
 
+    state.check_and_remove_expired_items(pc_id, SystemTime::now());
     Ok(())
 }
 

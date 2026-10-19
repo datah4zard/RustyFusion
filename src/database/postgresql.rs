@@ -438,16 +438,16 @@ impl PostgresDatabase {
             };
 
             let item: Option<Item> = item_raw.try_into_proto()?;
-            if item.is_some_and(|item| {
-                item.get_expiry_time()
-                    .is_some_and(|et| et < SystemTime::now())
-            }) {
+            let (loc, local_slot) = util::slot_num_to_loc_and_slot_num(slot_num)?;
+            if (loc != crate::enums::ItemLocation::Bank
+                || config_get().shard.remove_expired_items_from_bank.get())
+                && item.is_some_and(|item| item.has_expired(SystemTime::now()))
+            {
                 // item is expired; skip it
                 continue;
             }
 
-            let (loc, slot_num) = util::slot_num_to_loc_and_slot_num(slot_num)?;
-            player.set_item(loc, slot_num, item)?;
+            player.set_item(loc, local_slot, item)?;
         }
 
         let quest_items = Self::query(client, "load_quest_items", &[&pc_uid]).await?;
