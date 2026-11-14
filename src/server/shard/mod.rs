@@ -260,9 +260,9 @@ pub fn handle_packet<'a>(
                 Ok(())
             }
             //
-            _ => Err(FFError::build(
+            other => Err(FFError::build(
                 Severity::Warning,
-                "Unhandled packet".to_string(),
+                format!("Unhandled packet: {:?}", other),
             )),
         }
     })
