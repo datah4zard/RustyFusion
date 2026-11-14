@@ -215,7 +215,7 @@ impl SqliteDatabase {
         let pc_uid = player.get_uid();
 
         let position = if player.instance_id.instance_num.is_some() {
-            player.get_pre_warp().position
+            player.get_pre_warp().unwrap().position
         } else {
             player.get_position()
         };

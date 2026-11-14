@@ -349,7 +349,7 @@ impl From<BuddyListEntry> for sBuddyBaseInfo {
 
 #[derive(Debug, Clone)]
 struct BuddyList {
-    slots: [Option<Box<BuddyListEntry>>; SIZEOF_BUDDYLIST_SLOT as usize],
+    slots: [Option<BuddyListEntry>; SIZEOF_BUDDYLIST_SLOT as usize],
 }
 impl Default for BuddyList {
     fn default() -> Self {
@@ -379,7 +379,7 @@ impl BuddyList {
 
         for (idx, slot) in self.slots.iter_mut().enumerate() {
             if slot.is_none() {
-                *slot = Some(Box::new(buddy));
+                *slot = Some(buddy);
                 return Ok(idx);
             }
         }
@@ -415,7 +415,7 @@ impl BuddyList {
     fn get_all_entries(&self) -> Vec<BuddyListEntry> {
         self.slots
             .iter()
-            .filter_map(|entry| entry.as_ref().map(|entry| entry.as_ref().clone()))
+            .filter_map(|entry| entry.as_ref().cloned())
             .collect()
     }
 }
@@ -466,7 +466,7 @@ pub struct Player {
     pub group_id: Option<Uuid>,
     pub group_offered_to: Option<i32>,
     pub vehicle_speed: Option<i32>,
-    pre_warp_data: PreWarpData,
+    pre_warp_data: Option<PreWarpData>,
 }
 impl Player {
     pub fn new(uid: i64, slot_num: usize) -> Self {
@@ -1410,15 +1410,15 @@ impl Player {
     pub fn set_pre_warp(&mut self) {
         // we only save pre-warp when we're not in an instance
         if self.instance_id.instance_num.is_none() {
-            self.pre_warp_data = PreWarpData {
+            self.pre_warp_data = Some(PreWarpData {
                 instance_id: self.instance_id,
                 position: self.position,
-            }
+            })
         }
     }
 
-    pub fn get_pre_warp(&self) -> &PreWarpData {
-        &self.pre_warp_data
+    pub fn get_pre_warp(&self) -> Option<&PreWarpData> {
+        self.pre_warp_data.as_ref()
     }
 
     pub fn start_skyway_ride(&mut self, trip_data: &'static TripData, mut path: Path) {
