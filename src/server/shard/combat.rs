@@ -1,17 +1,20 @@
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashSet,
+    time::{Duration, Instant},
+};
 
 use crate::{
-    entity::{Combatant, Entity, EntityID, Projectile, ProjectileKind, NPC},
-    enums::{ItemLocation, SkillTargetType, TargetType},
-    error::*,
     defines::EQUIP_SLOT_HAND,
+    entity::{Combatant, Entity, EntityID, Projectile, ProjectileKind, NPC},
+    enums::{CharType, ItemLocation, SkillTargetType, TargetType},
+    error::*,
     net::{
         packet::{PacketID::*, *},
         ClientMap,
     },
     skills::{self, SkillResult},
     state::ShardServerState,
-    tabledata::tdata_get,
+    tabledata::{tdata_get, NPCStats},
     Position,
 };
 
@@ -40,18 +43,17 @@ impl FFPacket for sTargetPcId {}
 #[repr(packed(4))]
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
-struct sBulletTarget {
+struct sProjectileTarget {
     pub target_id: i32,
     pub character_type: i32,
 }
-impl FFPacket for sBulletTarget {}
+impl FFPacket for sProjectileTarget {}
 
 const MAX_TARGETS: usize = 3;
 const BATTERY_BASE_COST: u32 = 6;
 
-// how early a FIRE or how late a HIT may arrive
-// TODO tune against real-latency players
-const LAG_ALLOWANCE: Duration = Duration::from_millis(150);
+const FIRE_LAG_ALLOWANCE: Duration = Duration::from_millis(300);
+const HIT_EXPIRY_ALLOWANCE: Duration = Duration::from_millis(1000);
 
 pub fn pc_attack_npcs(
     pkt: Packet,
@@ -189,12 +191,16 @@ pub fn pc_rocket_style_fire(
     let pc_id = client.get_player_id()?;
     let pkt: &sP_CL2FE_REQ_PC_ROCKET_STYLE_FIRE = pkt.get()?;
 
-    // TODO validate range -> table data not accurate so actual range
-    // server position, not the client's iX/Y/Z
     let start_pos = state.get_player(pc_id)?.get_position();
-    let end_pos = Position { x: pkt.iToX, y: pkt.iToY, z: pkt.iToZ };
+    let end_pos = Position {
+        x: pkt.iToX,
+        y: pkt.iToY,
+        z: pkt.iToZ,
+    };
 
-    let Some(projectile_id) = fire_projectile(ProjectileKind::Rocket, start_pos, end_pos, pc_id, state)? else {
+    let Some(projectile_id) =
+        try_spawn_projectile(ProjectileKind::Rocket, start_pos, end_pos, pc_id, state)?
+    else {
         return Ok(());
     };
 
@@ -210,9 +216,9 @@ pub fn pc_rocket_style_fire(
         iX: start_pos.x,
         iY: start_pos.y,
         iZ: start_pos.z,
-        iToX: pkt.iToX,
-        iToY: pkt.iToY,
-        iToZ: pkt.iToZ,
+        iToX: end_pos.x,
+        iToY: end_pos.y,
+        iToZ: end_pos.z,
         iBulletID: projectile_id,
         Bullet: spc_bullet,
         iBatteryW: player.get_weapon_boosts() as i32,
@@ -227,9 +233,9 @@ pub fn pc_rocket_style_fire(
         iX: start_pos.x,
         iY: start_pos.y,
         iZ: start_pos.z,
-        iToX: pkt.iToX,
-        iToY: pkt.iToY,
-        iToZ: pkt.iToZ,
+        iToX: end_pos.x,
+        iToY: end_pos.y,
+        iToZ: end_pos.z,
         iBulletID: projectile_id,
         Bullet: spc_bullet,
         bNanoDeactive: 0,
@@ -252,11 +258,16 @@ pub fn pc_grenade_style_fire(
     let pc_id = client.get_player_id()?;
     let pkt: &sP_CL2FE_REQ_PC_GRENADE_STYLE_FIRE = pkt.get()?;
 
-    // grenade FIRE has no launch point
     let start_pos = state.get_player(pc_id)?.get_position();
-    let end_pos = Position { x: pkt.iToX, y: pkt.iToY, z: pkt.iToZ };
+    let end_pos = Position {
+        x: pkt.iToX,
+        y: pkt.iToY,
+        z: pkt.iToZ,
+    };
 
-    let Some(projectile_id) = fire_projectile(ProjectileKind::Grenade, start_pos, end_pos, pc_id, state)? else {
+    let Some(projectile_id) =
+        try_spawn_projectile(ProjectileKind::Grenade, start_pos, end_pos, pc_id, state)?
+    else {
         return Ok(());
     };
 
@@ -269,9 +280,9 @@ pub fn pc_grenade_style_fire(
 
     let resp = sP_FE2CL_REP_PC_GRENADE_STYLE_FIRE_SUCC {
         iSkillID: pkt.iSkillID,
-        iToX: pkt.iToX,
-        iToY: pkt.iToY,
-        iToZ: pkt.iToZ,
+        iToX: end_pos.x,
+        iToY: end_pos.y,
+        iToZ: end_pos.z,
         iBulletID: projectile_id,
         Bullet: spc_bullet,
         iBatteryW: player.get_weapon_boosts() as i32,
@@ -283,9 +294,9 @@ pub fn pc_grenade_style_fire(
 
     let bcast = sP_FE2CL_PC_GRENADE_STYLE_FIRE {
         iPC_ID: pc_id,
-        iToX: pkt.iToX,
-        iToY: pkt.iToY,
-        iToZ: pkt.iToZ,
+        iToX: end_pos.x,
+        iToY: end_pos.y,
+        iToZ: end_pos.z,
         iBulletID: projectile_id,
         Bullet: spc_bullet,
         bNanoDeactive: 0,
@@ -299,26 +310,37 @@ pub fn pc_grenade_style_fire(
     Ok(())
 }
 
-fn fire_projectile(
+fn try_spawn_projectile(
     projectile_kind: ProjectileKind,
     start_pos: Position,
     end_pos: Position,
     pc_id: i32,
     state: &mut ShardServerState,
 ) -> FFResult<Option<i8>> {
-    let player = state.get_player_mut(pc_id)?;
-
-    let Some(weapon) = *player.get_item(ItemLocation::Equip, EQUIP_SLOT_HAND as usize)? else {
+    let Some(weapon) = *state
+        .get_player(pc_id)?
+        .get_item(ItemLocation::Equip, EQUIP_SLOT_HAND as usize)?
+    else {
         return Err(FFError::build(
             Severity::Warning,
-            format!("{} tried to fire a {} with no item equipped", player, projectile_kind.name()),
+            format!(
+                "Player {} tried to fire a {} with no item equipped",
+                pc_id,
+                projectile_kind.name()
+            ),
         ));
     };
 
     let reject = |reason: &str| {
         FFError::build(
             Severity::Warning,
-            format!("Player {} fired {} weapon {}: {}", pc_id, projectile_kind.name(), weapon.id, reason),
+            format!(
+                "Player {} failed to fire {} weapon {}: {}",
+                pc_id,
+                projectile_kind.name(),
+                weapon.id,
+                reason
+            ),
         )
     };
 
@@ -327,54 +349,40 @@ fn fire_projectile(
         return Err(reject("wrong weapon type"));
     }
 
-    let max_targets = weapon_stats
-        .target_number
-        .and_then(|n| usize::try_from(n).ok())
-        .ok_or_else(|| reject("no valid target number"))?;
+    let table_value = |value: Option<i32>, field: &str| {
+        value
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or_else(|| reject(&format!("no valid {field}")))
+    };
+    // table times are in tenths of a second
+    let tenths = |value, field| {
+        table_value(value, field).map(|tenths| Duration::from_millis(u64::from(tenths) * 100))
+    };
 
-    // m_iDelayTime is in tenths of a second
-    let fire_delay = weapon_stats
-        .delay_time
-        .and_then(|tenths| u64::try_from(tenths).ok())
-        .map(|tenths| Duration::from_millis(tenths * 100))
-        .ok_or_else(|| reject("no valid delay time"))?;
+    let max_targets = table_value(weapon_stats.target_number, "target number")? as usize;
+    let fire_delay = tenths(weapon_stats.delay_time, "delay time")?;
+    let flight_time = tenths(weapon_stats.duration_time, "duration time")?;
+    let effect_area = table_value(weapon_stats.effect_area, "effect area")?;
 
-    // m_iDurationTime is in tenths of a second; the client explodes the projectile after it
-    let flight_time = weapon_stats
-        .duration_time
-        .and_then(|tenths| u64::try_from(tenths).ok())
-        .map(|tenths| Duration::from_millis(tenths * 100))
-        .ok_or_else(|| reject("no valid duration time"))?;
+    let player = state.get_player_mut(pc_id)?;
 
-    let effect_area = weapon_stats
-        .effect_area
-        .and_then(|area| u32::try_from(area).ok())
-        .ok_or_else(|| reject("no valid effect area"))?;
-
-    // GCRA fire limit, per weapon (the client doesn't carry cooldowns across swaps)
+    // rate limiting for weapon cooldown
     let now = Instant::now();
     if let Some(next_allowed) = player.get_next_shot_allowed(weapon.id) {
-        if now + LAG_ALLOWANCE < next_allowed {
+        if now + FIRE_LAG_ALLOWANCE < next_allowed {
             return Err(reject(&format!(
                 "too fast ({} ms before it was due, allowance {} ms, cooldown {} ms)",
                 (next_allowed - now).as_millis(),
-                LAG_ALLOWANCE.as_millis(),
+                FIRE_LAG_ALLOWANCE.as_millis(),
                 fire_delay.as_millis()
             )));
         }
     }
 
-    // TODO finalize weapon boost logic with rockets/grenades
+    // TODO boost cost currently a naive impl
     let weapon_boosts = player.get_weapon_boosts();
     let weapon_boosts_needed = BATTERY_BASE_COST + weapon_stats.required_level as u32;
-
-    let weapon_charged = if weapon_boosts >= weapon_boosts_needed {
-        player.set_weapon_boosts(weapon_boosts - weapon_boosts_needed);
-        true
-    } else {
-        player.set_weapon_boosts(0);
-        false
-    };
+    let weapon_charged = weapon_boosts >= weapon_boosts_needed;
 
     let projectile = Projectile {
         kind: projectile_kind,
@@ -382,116 +390,145 @@ fn fire_projectile(
         single_power: player.get_single_power(),
         multi_power: player.get_multi_power(),
         charged: weapon_charged,
+        attack_style: Combatant::get_style(player),
+        instance_id: player.instance_id,
         effect_area,
         max_targets,
         start_pos,
         end_pos,
-        fire_time: now,
-        end_time: now + flight_time + LAG_ALLOWANCE,
+        end_time: now + flight_time + HIT_EXPIRY_ALLOWANCE,
     };
 
+    // silently drop if too many active bullets
     let Some(projectile_id) = player.add_projectile(projectile) else {
         log(
             Severity::Debug,
-            &format!("{} tried to fire a {} but has too many projectiles", player, projectile_kind.name()),
+            &format!(
+                "Player {} tried to fire a {} but has too many projectiles",
+                pc_id,
+                projectile_kind.name()
+            ),
         );
         return Ok(None);
     };
-    // book from the due time so waiting can't bank shots
-    let due = player.get_next_shot_allowed(weapon.id).map_or(now, |next_allowed| next_allowed.max(now));
+
+    // only a stored shot costs boosts and books the cooldown
+    player.set_weapon_boosts(if weapon_charged {
+        weapon_boosts - weapon_boosts_needed
+    } else {
+        0
+    });
+
+    let due = player
+        .get_next_shot_allowed(weapon.id)
+        .map_or(now, |next_allowed| next_allowed.max(now));
     player.set_next_shot_allowed(weapon.id, due + fire_delay);
 
     Ok(Some(projectile_id))
 }
 
-/// The client sends ROCKET_STYLE_HIT for both rockets and grenades.
 pub fn pc_projectile_hit(
     pkt: Packet,
     clients: &ClientMap,
     state: &mut ShardServerState,
 ) -> FFResult<()> {
     let pc_id = clients.get_sender().get_player_id()?;
-    let player = state.get_player_mut(pc_id)?;
 
+    // parse the whole packet first, so a malformed HIT doesn't consume the projectile
     let mut reader = PacketReader::new(&pkt);
     let header: &sP_CL2FE_REQ_PC_ROCKET_STYLE_HIT = reader.get_struct()?;
     let projectile_id = header.iBulletID;
-
-    let Some(projectile) = player.remove_projectile(projectile_id) else {
-        return Err(FFError::build(
-            Severity::Warning,
-            format!("{} reported a hit for unknown projectile {}", player, projectile_id),
-        ));
-    };
-
-    let now = Instant::now();
-    let flight_ms = (now - projectile.fire_time).as_millis();
-    let limit_ms = (projectile.end_time - projectile.fire_time).as_millis();
-    if now >= projectile.end_time {
-        return Err(FFError::build(
-            Severity::Warning,
-            format!(
-                "[projectile-timing] {} reported a {} hit for expired projectile {} ({} ms after fire, limit {} ms)",
-                player,
-                projectile.kind.name(),
-                projectile_id,
-                flight_ms,
-                limit_ms
-            ),
-        ));
-    }
-    log(
-        Severity::Debug,
-        &format!(
-            "[projectile-timing] {} {} projectile {} hit {} ms after fire (limit {} ms, {} targets claimed)",
-            player,
-            projectile.kind.name(),
-            projectile_id,
-            flight_ms,
-            limit_ms,
-            header.iTargetCnt
-        ),
-    );
-    let spc_bullet: sPCBullet = sPCBullet::from(&projectile);
-
     let hit_pos = Position {
         x: header.iX,
         y: header.iY,
         z: header.iZ,
     };
+    let targets = (0..header.iTargetCnt)
+        .map(|_| reader.get_struct::<sProjectileTarget>().copied())
+        .collect::<FFResult<Vec<_>>>()?;
 
-    let player_instance = player.instance_id;
+    let Some(projectile) = state
+        .get_player_mut(pc_id)?
+        .remove_projectile(projectile_id)
+    else {
+        return Err(FFError::build(
+            Severity::Info,
+            format!(
+                "Player {} reported a hit for unknown or expired projectile {}",
+                pc_id, projectile_id
+            ),
+        ));
+    };
+    let spc_bullet = sPCBullet::from(&projectile);
+
+    let skip = |severity: Severity, reason: String| {
+        log(
+            severity,
+            &format!("Player {} {} hit {}", pc_id, projectile.kind.name(), reason),
+        );
+    };
 
     let mut hits = Vec::new();
-    for _ in 0..header.iTargetCnt {
-        let npc_id = reader.get_struct::<sBulletTarget>()?.target_id;
-        match state.get_npc(npc_id) {
-            Ok(npc) => {
-                if npc.instance_id != player_instance {
-                    log(
-                        Severity::Warning,
-                        &format!(
-                            "Player {} {} hit claimed {} in a different instance ({} != {})",
-                            pc_id,
-                            projectile.kind.name(),
-                            npc,
-                            npc.instance_id,
-                            player_instance
-                        ),
-                    );
-                    continue;
-                }
-                if let Some(distance) = hit_to_mob_distance(npc, hit_pos, projectile.effect_area) {
-                    hits.push((npc.get_id(), distance));
-                }
+    let mut seen_ids = HashSet::new();
+    for target in targets {
+        let target_id = target.target_id;
+        // player and NPC ids are separate, so a PC id must not be looked up as an NPC
+        match CharType::try_from(target.character_type) {
+            Ok(CharType::Mob) => {}
+            Ok(CharType::Player) => {
+                skip(
+                    Severity::Info,
+                    format!("listed player {target_id}; PvP projectiles are not supported"),
+                );
+                continue;
             }
-            Err(e) => log_error(e),
+            _ => {
+                skip(
+                    Severity::Warning,
+                    format!(
+                        "listed target {} with invalid type {}",
+                        target_id, target.character_type
+                    ),
+                );
+                continue;
+            }
+        }
+        if !seen_ids.insert(target_id) {
+            skip(
+                Severity::Warning,
+                format!("listed NPC {target_id} more than once"),
+            );
+            continue;
+        }
+        let Some(npc) = log_if_failed(state.get_npc(target_id)) else {
+            continue;
+        };
+        if npc.instance_id != projectile.instance_id {
+            skip(
+                Severity::Info,
+                format!(
+                    "claimed {} outside the instance it was fired in ({} != {})",
+                    npc, npc.instance_id, projectile.instance_id
+                ),
+            );
+            continue;
+        }
+        if npc.is_dead() {
+            skip(Severity::Info, format!("claimed dead {npc}"));
+            continue;
+        }
+        let Some(stats) = log_if_failed(tdata_get().get_npc_stats(npc.ty)) else {
+            continue;
+        };
+        if let Some(distance) = hit_to_mob_distance(npc, stats, hit_pos, projectile.effect_area) {
+            hits.push((npc.get_id(), distance));
         }
     }
 
     let target_ids = closest_targets(hits, projectile.max_targets);
 
-    let results: Vec<sAttackResult> = skills::do_projectile_attack(EntityID::Player(pc_id), &target_ids, &projectile, state)?;
+    let results =
+        skills::do_projectile_attack(EntityID::Player(pc_id), &target_ids, &projectile, state)?;
 
     let target_cnt = results.len() as i32;
     let mut bcast = match projectile.kind {
@@ -526,7 +563,6 @@ pub fn pc_projectile_hit(
 
     Ok(())
 }
-
 
 pub fn nano_skill_use(
     pkt: Packet,
@@ -740,10 +776,13 @@ pub fn nano_skill_use(
     Ok(())
 }
 
-// distance from the hit to the mob's body center
-fn hit_to_mob_distance(npc: &NPC, hit_pos: Position, effect_area: u32) -> Option<u32> {
-    let stats = tdata_get().get_npc_stats(npc.ty).ok()?;
-
+// anti-cheat for hit range
+fn hit_to_mob_distance(
+    npc: &NPC,
+    stats: &NPCStats,
+    hit_pos: Position,
+    effect_area: u32,
+) -> Option<u32> {
     let half_height = stats.height / 2;
     let npc_pos = npc.get_position();
     // mob server positions are from the feet

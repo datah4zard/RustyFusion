@@ -645,7 +645,7 @@ pub fn do_projectile_attack(
             projectile.multi_power
         },
         crit_chance: Some(CRIT_CHANCE),
-        attack_style: state.get_combatant(attacker_id)?.get_style(),
+        attack_style: projectile.attack_style,
         charged: projectile.charged,
     };
 
@@ -658,16 +658,6 @@ pub fn do_projectile_attack(
                 continue;
             }
         };
-        if target.is_dead() {
-            log(
-                Severity::Warning,
-                &format!(
-                    "{:?} tried to attack dead target {:?}",
-                    attacker_id, target_id
-                ),
-            );
-            continue;
-        }
         attack_results.push(handle_basic_attack(attacker_id, target, &attack));
     }
 

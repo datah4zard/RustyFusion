@@ -448,19 +448,19 @@ pub struct Projectile {
     pub single_power: i32,
     pub multi_power: i32,
     pub charged: bool,
+    pub attack_style: Option<CombatStyle>,
+    pub instance_id: InstanceID,
     pub effect_area: u32,
     pub max_targets: usize,
     pub start_pos: Position, // TODO used for range validation
     pub end_pos: Position,   // TODO used for range validation
-    pub fire_time: Instant,
     pub end_time: Instant,
 }
 
-impl From<&Projectile> for sPCBullet{
+impl From<&Projectile> for sPCBullet {
     fn from(value: &Projectile) -> Self {
         Self {
             eAT: 0,
-            // the client loads the weapon's table data from this, for grenades too
             iID: value.weapon_id as i32,
             bCharged: value.charged as i32,
         }
@@ -502,7 +502,7 @@ pub struct Player {
     nano_potions: u32,
     weapon_boosts: u32,
     owned_projectiles: [Option<Projectile>; SIZEOF_PC_BULLET_SLOT as usize],
-    next_shot_allowed: HashMap<i16, Instant>, // per weapon id
+    next_shot_allowed: HashMap<i16, Instant>,
     pub buddy_list_synced: bool,
     buddy_list: BuddyList,
     pub buddy_offered_to: Option<i64>,
@@ -1461,7 +1461,7 @@ impl Player {
     }
 
     pub fn set_next_shot_allowed(&mut self, weapon_id: i16, time: Instant) {
-        // passed entries mean no cooldown left, so dropping them keeps the map small
+        // drop finished cooldowns to keep the map small
         let now = Instant::now();
         self.next_shot_allowed.retain(|_, next| *next > now);
         self.next_shot_allowed.insert(weapon_id, time);
@@ -1491,10 +1491,11 @@ impl Player {
             })
     }
 
-    /// Frees the slot. The caller checks `end_time` (HIT logs the flight time on expiry).
+    /// Frees the slot even when the projectile expired.
     pub fn remove_projectile(&mut self, projectile_id: i8) -> Option<Projectile> {
         let slot = usize::try_from(projectile_id).ok()?;
-        self.owned_projectiles.get_mut(slot)?.take()
+        let projectile = self.owned_projectiles.get_mut(slot)?.take()?;
+        (Instant::now() < projectile.end_time).then_some(projectile)
     }
 
     pub fn set_pre_warp(&mut self) {
