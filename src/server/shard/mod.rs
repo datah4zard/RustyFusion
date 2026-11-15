@@ -167,7 +167,9 @@ pub fn handle_packet<'a>(
             P_CL2FE_REQ_PC_ATTACK_NPCs => combat::pc_attack_npcs(pkt, &clients, state),
             P_CL2FE_REQ_PC_ATTACK_CHARs => combat::pc_attack_pcs(pkt, &clients, state),
             P_CL2FE_REQ_PC_ROCKET_STYLE_FIRE => combat::pc_rocket_style_fire(pkt, &clients, state),
-            P_CL2FE_REQ_PC_GRENADE_STYLE_FIRE => combat::pc_grenade_style_fire(pkt, &clients, state),
+            P_CL2FE_REQ_PC_GRENADE_STYLE_FIRE => {
+                combat::pc_grenade_style_fire(pkt, &clients, state)
+            }
             // the client sends ROCKET_STYLE_HIT for grenades too; GRENADE_STYLE_HIT is never sent
             P_CL2FE_REQ_PC_ROCKET_STYLE_HIT => combat::pc_projectile_hit(pkt, &clients, state),
             P_CL2FE_REQ_NANO_SKILL_USE => combat::nano_skill_use(pkt, &clients, state),
