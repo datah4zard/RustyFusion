@@ -434,7 +434,6 @@ pub fn pc_projectile_hit(
 ) -> FFResult<()> {
     let pc_id = clients.get_sender().get_player_id()?;
 
-    // parse the whole packet first, so a malformed HIT doesn't consume the projectile
     let mut reader = PacketReader::new(&pkt);
     let header: &sP_CL2FE_REQ_PC_ROCKET_STYLE_HIT = reader.get_struct()?;
     let projectile_id = header.iBulletID;

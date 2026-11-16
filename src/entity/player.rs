@@ -460,7 +460,7 @@ pub struct Projectile {
 impl From<&Projectile> for sPCBullet {
     fn from(value: &Projectile) -> Self {
         Self {
-            eAT: 0,
+            eAT: 1,
             iID: value.weapon_id as i32,
             bCharged: value.charged as i32,
         }
