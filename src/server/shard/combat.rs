@@ -379,7 +379,6 @@ fn try_spawn_projectile(
         }
     }
 
-    // TODO boost cost currently a naive impl
     let weapon_boosts = player.get_weapon_boosts();
     let weapon_boosts_needed = BATTERY_BASE_COST + weapon_stats.required_level as u32;
     let weapon_charged = weapon_boosts >= weapon_boosts_needed;
