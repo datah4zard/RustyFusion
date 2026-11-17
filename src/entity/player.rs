@@ -1432,11 +1432,11 @@ impl Player {
         self.nano_potions
     }
 
-    pub fn get_next_shot_allowed(&self, weapon_id: i16) -> Option<Instant> {
+    pub fn get_next_shot_allowed_for_weapon(&self, weapon_id: i16) -> Option<Instant> {
         self.next_shot_allowed.get(&weapon_id).copied()
     }
 
-    pub fn set_next_shot_allowed(&mut self, weapon_id: i16, time: Instant) {
+    pub fn set_next_shot_allowed_for_weapon(&mut self, weapon_id: i16, time: Instant) {
         // drop finished cooldowns to keep the map small
         let now = Instant::now();
         self.next_shot_allowed.retain(|_, next| *next > now);

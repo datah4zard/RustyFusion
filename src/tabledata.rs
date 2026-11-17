@@ -1168,6 +1168,30 @@ fn load_item_data(
             let data: ItemDataEntry = serde_json::from_value(i.clone())
                 .map_err(|e| format!("Malformed item data entry ({:?}): {} {}", item_type, e, i))?;
             let key = (data.m_iItemNumber as i16, item_type);
+
+            let is_projectile_weapon = item_type == ItemType::Hand
+                && matches!(
+                    data.m_iEquipType,
+                    Some(equip_type) if equip_type == WPN_EQUIP_TYPE_DH_ROCKET as i32
+                        || equip_type == WPN_EQUIP_TYPE_OH_THROW as i32
+                );
+            if is_projectile_weapon {
+                let projectile_fields = [
+                    ("m_iTargetNumber", data.m_iTargetNumber),
+                    ("m_iDelayTime", data.m_iDelayTime),
+                    ("m_iDurationTime", data.m_iDurationTime),
+                    ("m_iEffectArea", data.m_iEffectArea),
+                ];
+                for (field, value) in projectile_fields {
+                    if !value.is_some_and(|v| v > 0) {
+                        return Err(format!(
+                            "Projectile weapon {} has no valid {}",
+                            data.m_iItemNumber, field
+                        ));
+                    }
+                }
+            }
+
             let data = ItemStats {
                 buy_price: data.m_iItemPrice as u32,
                 sell_price: data.m_iItemSellPrice as u32,

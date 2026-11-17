@@ -441,14 +441,14 @@ struct SkillCast {
     style: Option<CombatStyle>,
 }
 
+const CRIT_CHANCE: f32 = 0.05;
+
 pub fn do_basic_attack(
     attacker_id: EntityID,
     target_ids: &[EntityID],
     charged: bool,
     state: &mut ShardServerState,
 ) -> FFResult<()> {
-    const CRIT_CHANCE: f32 = 0.05;
-
     if let EntityID::Player(pc_id) = attacker_id {
         let player = state.get_player_mut(pc_id)?;
         if let Some(eid) = target_ids.first() {
@@ -627,8 +627,6 @@ pub fn do_projectile_attack(
     projectile: &Projectile,
     state: &mut ShardServerState,
 ) -> FFResult<Vec<sAttackResult>> {
-    const CRIT_CHANCE: f32 = 0.05;
-
     if let EntityID::Player(pc_id) = attacker_id {
         let player = state.get_player_mut(pc_id)?;
         if let Some(eid) = target_ids.first() {

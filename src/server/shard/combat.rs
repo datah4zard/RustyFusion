@@ -52,6 +52,7 @@ impl FFPacket for sProjectileTarget {}
 const MAX_TARGETS: usize = 3;
 const BATTERY_BASE_COST: u32 = 6;
 
+// TODO factor in the player's ping
 const FIRE_LAG_ALLOWANCE: Duration = Duration::from_millis(300);
 const HIT_EXPIRY_ALLOWANCE: Duration = Duration::from_millis(1000);
 
@@ -206,10 +207,7 @@ pub fn pc_rocket_style_fire(
 
     let player = state.get_player(pc_id)?;
     let spc_bullet = sPCBullet::from(player.get_projectile(projectile_id)?);
-    let (nano_id, nano_stamina) = player
-        .get_active_nano()
-        .map(|nano| (nano.get_id(), nano.get_stamina()))
-        .unwrap_or((0, 0));
+    let nano = player.get_active_nano();
 
     let resp = sP_FE2CL_REP_PC_ROCKET_STYLE_FIRE_SUCC {
         iSkillID: pkt.iSkillID,
@@ -223,8 +221,8 @@ pub fn pc_rocket_style_fire(
         Bullet: spc_bullet,
         iBatteryW: player.get_weapon_boosts() as i32,
         bNanoDeactive: 0,
-        iNanoID: nano_id,
-        iNanoStamina: nano_stamina,
+        iNanoID: nano.map(|n| n.get_id()).unwrap_or(0),
+        iNanoStamina: nano.map(|n| n.get_stamina()).unwrap_or(0),
     };
     client.send_packet(P_FE2CL_REP_PC_ROCKET_STYLE_FIRE_SUCC, &resp);
 
@@ -273,10 +271,7 @@ pub fn pc_grenade_style_fire(
 
     let player = state.get_player(pc_id)?;
     let spc_bullet = sPCBullet::from(player.get_projectile(projectile_id)?);
-    let (nano_id, nano_stamina) = player
-        .get_active_nano()
-        .map(|nano| (nano.get_id(), nano.get_stamina()))
-        .unwrap_or((0, 0));
+    let nano = player.get_active_nano();
 
     let resp = sP_FE2CL_REP_PC_GRENADE_STYLE_FIRE_SUCC {
         iSkillID: pkt.iSkillID,
@@ -287,8 +282,8 @@ pub fn pc_grenade_style_fire(
         Bullet: spc_bullet,
         iBatteryW: player.get_weapon_boosts() as i32,
         bNanoDeactive: 0,
-        iNanoID: nano_id,
-        iNanoStamina: nano_stamina,
+        iNanoID: nano.map(|n| n.get_id()).unwrap_or(0),
+        iNanoStamina: nano.map(|n| n.get_stamina()).unwrap_or(0),
     };
     client.send_packet(P_FE2CL_REP_PC_GRENADE_STYLE_FIRE_SUCC, &resp);
 
@@ -349,26 +344,19 @@ fn try_spawn_projectile(
         return Err(reject("wrong weapon type"));
     }
 
-    let table_value = |value: Option<i32>, field: &str| {
-        value
-            .and_then(|value| u32::try_from(value).ok())
-            .ok_or_else(|| reject(&format!("no valid {field}")))
-    };
     // table times are in tenths of a second
-    let tenths = |value, field| {
-        table_value(value, field).map(|tenths| Duration::from_millis(u64::from(tenths) * 100))
-    };
+    let tenths = |value: Option<i32>| Duration::from_millis(value.unwrap() as u64 * 100);
 
-    let max_targets = table_value(weapon_stats.target_number, "target number")? as usize;
-    let fire_delay = tenths(weapon_stats.delay_time, "delay time")?;
-    let flight_time = tenths(weapon_stats.duration_time, "duration time")?;
-    let effect_area = table_value(weapon_stats.effect_area, "effect area")?;
+    let max_targets = weapon_stats.target_number.unwrap() as usize;
+    let fire_delay = tenths(weapon_stats.delay_time);
+    let flight_time = tenths(weapon_stats.duration_time);
+    let effect_area = weapon_stats.effect_area.unwrap() as u32;
 
     let player = state.get_player_mut(pc_id)?;
 
     // rate limiting for weapon cooldown
     let now = Instant::now();
-    if let Some(next_allowed) = player.get_next_shot_allowed(weapon.id) {
+    if let Some(next_allowed) = player.get_next_shot_allowed_for_weapon(weapon.id) {
         if now + FIRE_LAG_ALLOWANCE < next_allowed {
             return Err(reject(&format!(
                 "too fast ({} ms before it was due, allowance {} ms, cooldown {} ms)",
@@ -393,6 +381,7 @@ fn try_spawn_projectile(
         instance_id: player.instance_id,
         effect_area,
         max_targets,
+        // TODO validate end_pos against start_pos (range validation)
         start_pos,
         end_pos,
         end_time: now + flight_time + HIT_EXPIRY_ALLOWANCE,
@@ -419,9 +408,9 @@ fn try_spawn_projectile(
     });
 
     let due = player
-        .get_next_shot_allowed(weapon.id)
+        .get_next_shot_allowed_for_weapon(weapon.id)
         .map_or(now, |next_allowed| next_allowed.max(now));
-    player.set_next_shot_allowed(weapon.id, due + fire_delay);
+    player.set_next_shot_allowed_for_weapon(weapon.id, due + fire_delay);
 
     Ok(Some(projectile_id))
 }
@@ -470,13 +459,12 @@ pub fn pc_projectile_hit(
     let mut seen_ids = HashSet::new();
     for target in targets {
         let target_id = target.target_id;
-        // player and NPC ids are separate, so a PC id must not be looked up as an NPC
         match CharType::try_from(target.character_type) {
             Ok(CharType::Mob) => {}
             Ok(CharType::Player) => {
                 skip(
                     Severity::Info,
-                    format!("listed player {target_id}; PvP projectiles are not supported"),
+                    format!("listed player {target_id}; PvP is TODO"),
                 );
                 continue;
             }
@@ -503,7 +491,7 @@ pub fn pc_projectile_hit(
         };
         if npc.instance_id != projectile.instance_id {
             skip(
-                Severity::Info,
+                Severity::Warning,
                 format!(
                     "claimed {} outside the instance it was fired in ({} != {})",
                     npc, npc.instance_id, projectile.instance_id
@@ -512,7 +500,7 @@ pub fn pc_projectile_hit(
             continue;
         }
         if npc.is_dead() {
-            skip(Severity::Info, format!("claimed dead {npc}"));
+            skip(Severity::Debug, format!("claimed dead {npc}"));
             continue;
         }
         let Some(stats) = log_if_failed(tdata_get().get_npc_stats(npc.ty)) else {
@@ -523,6 +511,7 @@ pub fn pc_projectile_hit(
         }
     }
 
+    // keep the closest n targets if there are more than the limit
     let target_ids = closest_targets(hits, projectile.max_targets);
 
     let results =
