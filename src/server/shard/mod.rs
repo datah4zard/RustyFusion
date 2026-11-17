@@ -53,6 +53,10 @@ pub fn handle_packet<'a>(
             return pc::pc_enter(pkt, &clients, state, time).await;
         }
 
+        if pkt_id == P_CL2FE_REQ_PC_LOADING_COMPLETE {
+            return pc::pc_loading_complete(pkt, clients.get_sender(), state).await;
+        }
+
         if pkt_id == P_CL2FE_REQ_PC_EXIT {
             return pc::pc_exit(&clients, state).await;
         }
@@ -89,7 +93,7 @@ pub fn handle_packet<'a>(
             P_CL2LS_REQ_LOGIN => wrong_server(pkt, clients.get_sender()),
             //
             P_CL2FE_REQ_PC_ENTER => unreachable!(),
-            P_CL2FE_REQ_PC_LOADING_COMPLETE => pc::pc_loading_complete(pkt, &clients, state),
+            P_CL2FE_REQ_PC_LOADING_COMPLETE => unreachable!(),
             P_CL2FE_REQ_PC_CHANNEL_NUM => pc::pc_channel_num(clients.get_sender(), state),
             P_CL2FE_REQ_CHANNEL_INFO => pc::pc_channel_info(clients.get_sender(), state),
             P_CL2FE_REQ_PC_WARP_CHANNEL => pc::pc_warp_channel(pkt, &clients, state),

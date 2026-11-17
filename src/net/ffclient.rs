@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     fmt::{Debug, Display},
     net::{IpAddr, SocketAddr},
     sync::{atomic::AtomicU64, Arc},
@@ -67,6 +68,12 @@ impl ClientMetadata {
     }
 }
 
+fn make_packet<T: FFPacket>(pkt_id: PacketID, pkt: &T) -> Packet {
+    // It should be impossible for a single packet struct to be
+    // bigger than the packet buffer, so fail fast if that happens.
+    panic_if_failed(Packet::new(pkt_id, pkt))
+}
+
 /// Handle to a connected client.
 /// This is cheap to clone and safe to send across threads.
 #[derive(Clone)]
@@ -92,9 +99,7 @@ impl FFClient {
     }
 
     pub fn send_packet<T: FFPacket>(&self, pkt_id: PacketID, pkt: &T) {
-        // It should be impossible for a single packet struct to be
-        // bigger than the packet buffer, so fail fast if that happens.
-        let pkt = panic_if_failed(Packet::new(pkt_id, pkt));
+        let pkt = make_packet(pkt_id, pkt);
         self.send_payload(pkt);
     }
 
@@ -102,6 +107,13 @@ impl FFClient {
         // it's okay to silently fail; if the channel is closed,
         // the client has already disconnected
         let _ = self.tx.send(ClientMessage::SendPacket(pkt));
+    }
+
+    pub fn batch(&self) -> PacketBatch<'_> {
+        PacketBatch {
+            client: self,
+            queue: VecDeque::new(),
+        }
     }
 
     pub fn update_encryption(
@@ -205,5 +217,26 @@ impl FFClient {
 
     pub fn clear_live_check(&self) {
         let _ = self.tx.send(ClientMessage::ClearLiveCheck);
+    }
+}
+
+pub struct PacketBatch<'a> {
+    client: &'a FFClient,
+    queue: VecDeque<Packet>,
+}
+impl PacketBatch<'_> {
+    pub fn queue_packet<T: FFPacket>(&mut self, pkt_id: PacketID, pkt: &T) {
+        let pkt = make_packet(pkt_id, pkt);
+        self.queue_payload(pkt);
+    }
+
+    pub fn queue_payload(&mut self, pkt: Packet) {
+        self.queue.push_back(pkt);
+    }
+
+    pub fn send_all(mut self) {
+        while let Some(pkt) = self.queue.pop_front() {
+            self.client.send_payload(pkt);
+        }
     }
 }

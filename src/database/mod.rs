@@ -12,6 +12,7 @@ use parking_lot::RwLock;
 use crate::config::{config_get, GeneralConfig};
 use crate::entity::Player;
 use crate::error::*;
+use crate::net::packet::sBuddyBaseInfo;
 use crate::state::Account;
 
 #[cfg(not(any(feature = "postgres", feature = "sqlite")))]
@@ -98,6 +99,31 @@ fn get_sql_string(name: &str) -> FFResult<&'static str> {
     let sql_string = read_sql_string(name)?;
     let interned = cache_sql_string(name, sql_string);
     Ok(interned)
+}
+
+fn collect_buddy_info<R>(
+    pc_uids: &[BigInt],
+    rows: &[R],
+    from_row: impl Fn(&R) -> sBuddyBaseInfo,
+) -> Vec<sBuddyBaseInfo> {
+    let infos: Vec<sBuddyBaseInfo> = rows.iter().map(from_row).collect();
+    let missing: Vec<BigInt> = pc_uids
+        .iter()
+        .copied()
+        .filter(|pc_uid| !infos.iter().any(|info| info.iPCUID == *pc_uid))
+        .collect();
+
+    if !missing.is_empty() {
+        log(
+            Severity::Warning,
+            &format!(
+                "Couldn't load buddy info for players with UIDs {:?}",
+                missing
+            ),
+        );
+    }
+
+    infos
 }
 
 #[cfg(feature = "postgres")]
@@ -202,6 +228,7 @@ define_db_api! {
     save_players(&self, players: &[&Player]) -> ();
     load_player(&self, acc_id: BigInt, pc_uid: BigInt) -> Option<Player>;
     load_players(&self, acc_id: BigInt) -> Vec<Player>;
+    load_buddy_info(&self, pc_uids: &[BigInt], blocked: bool) -> Vec<sBuddyBaseInfo>;
     delete_player(&self, pc_uid: BigInt) -> ();
     is_code_redeemed(&self, pc_uid: BigInt, code: &str) -> bool;
     record_code_redemption(&self, pc_uid: BigInt, code: &str) -> ();
