@@ -7,7 +7,7 @@ use rand::Rng;
 
 use crate::{
     defines::*,
-    entity::{Combatant, EntityID},
+    entity::{Combatant, EntityID, Projectile},
     enums::{
         BuffID, BuffType, CombatStyle, SkillTargetType, SkillType, TargetType, TimeBuffUpdate,
     },
@@ -441,14 +441,14 @@ struct SkillCast {
     style: Option<CombatStyle>,
 }
 
+const CRIT_CHANCE: f32 = 0.05;
+
 pub fn do_basic_attack(
     attacker_id: EntityID,
     target_ids: &[EntityID],
     charged: bool,
     state: &mut ShardServerState,
 ) -> FFResult<()> {
-    const CRIT_CHANCE: f32 = 0.05;
-
     if let EntityID::Player(pc_id) = attacker_id {
         let player = state.get_player_mut(pc_id)?;
         if let Some(eid) = target_ids.first() {
@@ -619,6 +619,46 @@ pub fn do_basic_attack(
     });
 
     Ok(())
+}
+
+pub fn do_projectile_attack(
+    attacker_id: EntityID,
+    target_ids: &[EntityID],
+    projectile: &Projectile,
+    state: &mut ShardServerState,
+) -> FFResult<Vec<sAttackResult>> {
+    if let EntityID::Player(pc_id) = attacker_id {
+        let player = state.get_player_mut(pc_id)?;
+        if let Some(eid) = target_ids.first() {
+            // used by scripts as an indicator of who the player is in combat with
+            player.target = Some(*eid);
+        }
+    }
+
+    let attack = BasicAttack {
+        power: if target_ids.len() == 1 {
+            projectile.single_power
+        } else {
+            projectile.multi_power
+        },
+        crit_chance: Some(CRIT_CHANCE),
+        attack_style: projectile.attack_style,
+        charged: projectile.charged,
+    };
+
+    let mut attack_results = Vec::with_capacity(target_ids.len());
+    for target_id in target_ids {
+        let target = match state.get_combatant_mut(*target_id) {
+            Ok(target) => target,
+            Err(e) => {
+                log_error(e);
+                continue;
+            }
+        };
+        attack_results.push(handle_basic_attack(attacker_id, target, &attack));
+    }
+
+    Ok(attack_results)
 }
 
 pub fn do_skill(

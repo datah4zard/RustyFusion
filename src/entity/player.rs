@@ -2,7 +2,7 @@ use std::{
     any::Any,
     collections::HashMap,
     fmt::Display,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 use crate::{
@@ -396,6 +396,53 @@ impl RelationshipList {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectileKind {
+    Rocket,
+    Grenade,
+}
+impl ProjectileKind {
+    pub fn equip_type(self) -> i32 {
+        match self {
+            ProjectileKind::Rocket => WPN_EQUIP_TYPE_DH_ROCKET as i32,
+            ProjectileKind::Grenade => WPN_EQUIP_TYPE_OH_THROW as i32,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            ProjectileKind::Rocket => "rocket",
+            ProjectileKind::Grenade => "grenade",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Projectile {
+    pub kind: ProjectileKind,
+    pub weapon_id: i16,
+    pub single_power: i32,
+    pub multi_power: i32,
+    pub charged: bool,
+    pub attack_style: Option<CombatStyle>,
+    pub instance_id: InstanceID,
+    pub effect_area: u32,
+    pub max_targets: usize,
+    pub start_pos: Position, // TODO used for range validation
+    pub end_pos: Position,   // TODO used for range validation
+    pub end_time: Instant,
+}
+
+impl From<&Projectile> for sPCBullet {
+    fn from(value: &Projectile) -> Self {
+        Self {
+            eAT: 1,
+            iID: value.weapon_id as i32,
+            bCharged: value.charged as i32,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Player {
     id: Option<i32>,
@@ -430,6 +477,8 @@ pub struct Player {
     fusion_matter: u32,
     nano_potions: u32,
     weapon_boosts: u32,
+    owned_projectiles: [Option<Projectile>; SIZEOF_PC_BULLET_SLOT as usize],
+    next_shot_allowed: HashMap<i16, Instant>,
     pub initial_load_done: bool,
     relationship_list: RelationshipList,
     pub buddy_offered_to: Option<i64>,
@@ -1381,6 +1430,48 @@ impl Player {
     pub fn set_nano_potions(&mut self, nano_potions: u32) -> u32 {
         self.nano_potions = clamp(nano_potions, 0, PC_BATTERY_MAX);
         self.nano_potions
+    }
+
+    pub fn get_next_shot_allowed_for_weapon(&self, weapon_id: i16) -> Option<Instant> {
+        self.next_shot_allowed.get(&weapon_id).copied()
+    }
+
+    pub fn set_next_shot_allowed_for_weapon(&mut self, weapon_id: i16, time: Instant) {
+        // drop finished cooldowns to keep the map small
+        let now = Instant::now();
+        self.next_shot_allowed.retain(|_, next| *next > now);
+        self.next_shot_allowed.insert(weapon_id, time);
+    }
+
+    pub fn add_projectile(&mut self, projectile: Projectile) -> Option<i8> {
+        let now = Instant::now();
+        // lazy expiry
+        let slot = self
+            .owned_projectiles
+            .iter()
+            .position(|b| b.as_ref().is_none_or(|b| now >= b.end_time))?;
+
+        self.owned_projectiles[slot] = Some(projectile);
+        Some(slot as i8)
+    }
+
+    pub fn get_projectile(&self, projectile_id: i8) -> FFResult<&Projectile> {
+        usize::try_from(projectile_id)
+            .ok()
+            .and_then(|slot| self.owned_projectiles.get(slot)?.as_ref())
+            .ok_or_else(|| {
+                FFError::build(
+                    Severity::Warning,
+                    format!("{} has no projectile {}", self, projectile_id),
+                )
+            })
+    }
+
+    /// Frees the slot even when the projectile expired.
+    pub fn remove_projectile(&mut self, projectile_id: i8) -> Option<Projectile> {
+        let slot = usize::try_from(projectile_id).ok()?;
+        let projectile = self.owned_projectiles.get_mut(slot)?.take()?;
+        (Instant::now() < projectile.end_time).then_some(projectile)
     }
 
     pub fn set_pre_warp(&mut self) {
