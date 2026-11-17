@@ -233,6 +233,20 @@ impl BuffStack {
         self.buffs.iter().any(|b| b.ty == buff_type)
     }
 
+    fn get_time_buff(&self) -> v0104::sTimeBuff {
+        let now = Instant::now();
+        v0104::sTimeBuff {
+            iTimeLimit: match self.get_expires() {
+                Some(expires) => expires.saturating_duration_since(now).as_millis() as u64,
+                None => 0,
+            },
+            iTimeDuration: self.get_duration().map_or(0, |d| d.as_millis() as u64),
+            iTimeRepeat: unused!(),
+            iValue: self.get_max_value(),
+            iConfirmNum: unused!(),
+        }
+    }
+
     fn tick(
         &mut self,
         buff_id: BuffID,
@@ -248,7 +262,7 @@ impl BuffStack {
                 updates.push(BuffUpdate::Added(
                     buff_id,
                     self.get_dominant_type(),
-                    (&*self).into(),
+                    self.get_time_buff(),
                 ));
             }
 
@@ -258,7 +272,7 @@ impl BuffStack {
                 updates.push(BuffUpdate::Changed(
                     buff_id,
                     self.get_dominant_type(),
-                    (&*self).into(),
+                    self.get_time_buff(),
                 ));
             }
 
@@ -341,21 +355,6 @@ impl BuffStack {
             &format!("Buff {:?} ticked on {:?}", buff_id, target),
         );
         false
-    }
-}
-impl From<&BuffStack> for v0104::sTimeBuff {
-    fn from(stack: &BuffStack) -> Self {
-        let now = Instant::now();
-        Self {
-            iTimeLimit: match stack.get_expires() {
-                Some(expires) => expires.saturating_duration_since(now).as_millis() as u64,
-                None => 0,
-            },
-            iTimeDuration: stack.get_duration().map_or(0, |d| d.as_millis() as u64),
-            iTimeRepeat: unused!(),
-            iValue: stack.get_max_value(),
-            iConfirmNum: unused!(),
-        }
     }
 }
 

@@ -18,6 +18,7 @@ macro_rules! for_each_db_test {
         $macro!(test_player_selected);
         $macro!(test_player_delete);
         $macro!(test_code_redemption);
+        $macro!(test_load_buddy_info);
     };
 }
 
@@ -277,4 +278,65 @@ pub async fn test_code_redemption<D: DbImpl>(db: &Database<D>) {
     // redemptions are removed along with the player
     db.delete_player(uid).await.unwrap();
     assert!(!db.is_code_redeemed(uid, code).await.unwrap());
+}
+
+pub async fn test_load_buddy_info<D: DbImpl>(db: &Database<D>) {
+    use crate::entity::PlayerStyle;
+    let acc = db.create_account("eddy", "h").await.unwrap();
+    let buddy_uids: [i64; 2] = [8008, 8009];
+    let missing_uid: i64 = 8999;
+
+    for (slot, uid) in buddy_uids.iter().enumerate() {
+        let mut p = make_player(*uid, slot);
+        db.init_player(acc.id, &p).await.unwrap();
+        p.style = Some(PlayerStyle {
+            gender: 2,
+            face_style: 1,
+            hair_style: 1,
+            hair_color: 1,
+            skin_color: 1,
+            eye_color: 1,
+            height: 1,
+            body: 1,
+        });
+        db.update_player_appearance(&p).await.unwrap();
+    }
+
+    // requested out of UID order to check that input order is preserved
+    let requested = [buddy_uids[1], buddy_uids[0]];
+    let buddies = db
+        .load_buddy_info(&requested, false)
+        .await
+        .expect("load_buddy_info");
+    let blocked = db
+        .load_buddy_info(&requested, true)
+        .await
+        .expect("load_buddy_info (blocked)");
+
+    for (infos, blocked_flag) in [(&buddies, 0), (&blocked, 1)] {
+        let uids: Vec<i64> = infos.iter().map(|info| info.iPCUID).collect();
+        assert_eq!(uids, requested, "results should be in input order");
+        for info in infos {
+            assert_eq!({ info.bBlocked }, blocked_flag);
+            assert_eq!({ info.iGender }, 2);
+            assert_eq!(
+                { info.szFirstName },
+                crate::util::encode_utf16(&format!("Test{}", { info.iPCUID })).unwrap()
+            );
+        }
+    }
+
+    // missing players are skipped rather than failing the whole load
+    let partial = db
+        .load_buddy_info(&[buddy_uids[0], missing_uid], false)
+        .await
+        .expect("load_buddy_info (partial)");
+    let uids: Vec<i64> = partial.iter().map(|info| info.iPCUID).collect();
+    assert_eq!(uids, vec![buddy_uids[0]]);
+
+    let empty = db
+        .load_buddy_info(&[], false)
+        .await
+        .expect("load_buddy_info (empty)");
+    assert!(empty.is_empty());
 }

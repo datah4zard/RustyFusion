@@ -10,7 +10,7 @@ use regex::Regex;
 use crate::{
     database::*,
     defines::*,
-    entity::{BuddyListEntry, Combatant, Entity, PlayerFlags, PlayerStyle},
+    entity::{Combatant, Entity, PlayerFlags, PlayerStyle},
     enums::PlayerGuide,
     item::Item,
     mission::Task,
@@ -310,11 +310,7 @@ impl PostgresDatabase {
         Ok(())
     }
 
-    async fn load_player_internal(
-        client: &impl GenericClient,
-        row: &Row,
-        load_buddies: bool,
-    ) -> FFResult<Player> {
+    async fn load_player_internal(client: &impl GenericClient, row: &Row) -> FFResult<Player> {
         let pc_uid = row.get("PlayerId");
         let slot_num: Int = row.get("Slot");
         let mut player = Player::new(pc_uid, slot_num as usize);
@@ -457,10 +453,8 @@ impl PostgresDatabase {
             player.set_quest_item_count(item_id as i16, count as usize)?;
         }
 
-        if load_buddies {
-            log_if_failed(Self::load_buddies(client, &mut player).await);
-            log_if_failed(Self::load_blocks(client, &mut player).await);
-        }
+        Self::load_buddies(client, &mut player).await?;
+        Self::load_blocks(client, &mut player).await?;
 
         let perms: Int = row.get("AccountLevel");
         player.perms = perms as i16;
@@ -468,67 +462,27 @@ impl PostgresDatabase {
         Ok(player)
     }
 
-    async fn load_buddy_entry(
-        client: &impl GenericClient,
-        buddy_uid: BigInt,
-    ) -> FFResult<Option<BuddyListEntry>> {
-        let rows = Self::query(client, "load_player_lite", &[&buddy_uid]).await?;
-        let Some(row) = rows.first() else {
-            return Ok(None);
-        };
-        let appearance_flag: Int = row.get("AppearanceFlag");
-        if appearance_flag == 0 {
-            return Err(FFError::build(
-                Severity::Warning,
-                format!("Buddy {} has no appearance set", buddy_uid),
-            ));
+    fn buddy_info_from_row(row: &Row, blocked: bool) -> sBuddyBaseInfo {
+        let first_name: String = row.get("FirstName");
+        let last_name: String = row.get("LastName");
+        sBuddyBaseInfo {
+            iID: unused!(),
+            iPCUID: row.get("PlayerId"),
+            bBlocked: blocked as i8,
+            bFreeChat: 1,
+            iPCState: unused!(),
+            szFirstName: util::encode_utf16(&first_name).unwrap(),
+            szLastName: util::encode_utf16(&last_name).unwrap(),
+            iGender: row.get::<_, Int>("Gender") as i8,
+            iNameCheckFlag: row.get::<_, Int>("NameCheck") as i8,
         }
-        let style = PlayerStyle {
-            gender: row.get::<_, Int>("Gender") as i8,
-            face_style: row.get::<_, Int>("FaceStyle") as i8,
-            hair_style: row.get::<_, Int>("HairStyle") as i8,
-            hair_color: row.get::<_, Int>("HairColor") as i8,
-            skin_color: row.get::<_, Int>("SkinColor") as i8,
-            eye_color: row.get::<_, Int>("EyeColor") as i8,
-            height: row.get::<_, Int>("Height") as i8,
-            body: row.get::<_, Int>("Body") as i8,
-        };
-        Ok(Some(BuddyListEntry {
-            pc_uid: row.get("PlayerId"),
-            first_name: row.get("FirstName"),
-            last_name: row.get("LastName"),
-            style,
-            name_check: (row.get::<_, Int>("NameCheck") as i8).try_into()?,
-            free_chat: true,
-            blocked: false,
-        }))
     }
 
     async fn load_buddies(client: &impl GenericClient, player: &mut Player) -> FFResult<()> {
         let rows = Self::query(client, "load_buddy_ids", &[&player.get_uid()]).await?;
         for row in rows {
             let buddy_uid: BigInt = row.get("PlayerBId");
-            match Self::load_buddy_entry(client, buddy_uid).await {
-                Ok(Some(buddy_info)) => {
-                    log_if_failed(player.add_buddy(buddy_info));
-                }
-                Ok(None) => {
-                    log(
-                        Severity::Warning,
-                        &format!("Buddy with UID {} not found", buddy_uid),
-                    );
-                }
-                Err(e) => {
-                    log(
-                        Severity::Warning,
-                        &format!(
-                            "Failed to load buddy with UID {}: {}",
-                            buddy_uid,
-                            e.get_msg()
-                        ),
-                    );
-                }
-            }
+            log_if_failed(player.add_buddy(buddy_uid));
         }
         Ok(())
     }
@@ -786,9 +740,7 @@ impl DbImpl for PostgresDatabase {
         let rows = Self::query(&client, "load_players", &[&acc_id]).await?;
         for row in &rows {
             if row.get::<_, BigInt>("PlayerId") == pc_uid {
-                return Self::load_player_internal(&client, row, true)
-                    .await
-                    .map(Some);
+                return Self::load_player_internal(&client, row).await.map(Some);
             }
         }
         Ok(None)
@@ -799,7 +751,7 @@ impl DbImpl for PostgresDatabase {
         let chars = Self::query(&client, "load_players", &[&acc_id]).await?;
         let mut players = Vec::with_capacity(chars.len());
         for row in chars {
-            match Self::load_player_internal(&client, &row, true).await {
+            match Self::load_player_internal(&client, &row).await {
                 Ok(p) => players.push(p),
                 Err(e) => {
                     let pc_uid: BigInt = row.get("PlayerId");
@@ -811,6 +763,22 @@ impl DbImpl for PostgresDatabase {
             }
         }
         Ok(players)
+    }
+
+    async fn load_buddy_info(
+        &self,
+        pc_uids: &[BigInt],
+        blocked: bool,
+    ) -> FFResult<Vec<sBuddyBaseInfo>> {
+        if pc_uids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let client = self.get_client().await?;
+        let rows = Self::query(&client, "load_buddy_info", &[&pc_uids]).await?;
+        Ok(collect_buddy_info(pc_uids, &rows, |row| {
+            Self::buddy_info_from_row(row, blocked)
+        }))
     }
 
     async fn save_player(&self, player: &Player) -> FFResult<()> {

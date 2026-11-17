@@ -262,21 +262,25 @@ pub async fn pc_exit(clients: &ClientMap<'_>, state: Arc<Mutex<ShardServerState>
     Ok(())
 }
 
-pub fn pc_loading_complete(
+pub async fn pc_loading_complete(
     pkt: Packet,
-    clients: &ClientMap,
-    state: &mut ShardServerState,
+    client: &FFClient,
+    state_lock: Arc<Mutex<ShardServerState>>,
 ) -> FFResult<()> {
     let _pkt: &sP_CL2FE_REQ_PC_LOADING_COMPLETE = pkt.get()?;
 
     let resp = sP_FE2CL_REP_PC_LOADING_COMPLETE_SUCC { iPC_ID: unused!() };
-    let pc_id = clients.get_sender().get_player_id()?;
+    let pc_id = client.get_player_id()?;
+    let mut state = state_lock.lock().await;
     let player = state.get_player(pc_id)?;
     let map_num = player.instance_id.map_num;
     let chunk = player.get_chunk_coords();
-    state.entity_map.update(player.get_id(), Some(chunk), true);
-    let client = clients.get_sender();
-    client.send_packet(P_FE2CL_REP_PC_LOADING_COMPLETE_SUCC, &resp);
+    state
+        .entity_map
+        .update(EntityID::Player(pc_id), Some(chunk), true);
+
+    let mut pkts = client.batch();
+    pkts.queue_packet(P_FE2CL_REP_PC_LOADING_COMPLETE_SUCC, &resp);
 
     // map info sync
     if map_num != ID_OVERWORLD {
@@ -304,33 +308,49 @@ pub fn pc_loading_complete(
             map_info_pkt.iEP_ID = ep_id as i32;
             // TODO remaining EP data
         }
-        client.send_packet(P_FE2CL_INSTANCE_MAP_INFO, &map_info_pkt);
+        pkts.queue_packet(P_FE2CL_INSTANCE_MAP_INFO, &map_info_pkt);
     }
 
-    // buddy list sync.
-    // we only want to do this once and we can't do it on initial load
     let player = state.get_player_mut(pc_id).unwrap();
-    if !player.buddy_list_synced {
-        let buddy_info = player.get_all_buddy_info();
+    if !player.initial_load_done {
+        // buddy list sync.
+        // we only want to do this once and we can't do it on initial load
+        let buddy_uids = player.get_buddy_uids();
+        let blocked_uids = player.get_blocked_uids();
+        assert!(buddy_uids.len() + blocked_uids.len() <= SIZEOF_BUDDYLIST_SLOT as usize);
+
+        // drop state while doing the DB call
+        drop(state);
+
+        let db = db_get();
+        let buddies = db.load_buddy_info(&buddy_uids, false).await?;
+        let blocked = db.load_buddy_info(&blocked_uids, true).await?;
+        let entries = [buddies, blocked].concat();
+
         let mut buddy_list_pkt = PacketBuilder::new(P_FE2CL_REP_PC_BUDDYLIST_INFO_SUCC).with(
             &sP_FE2CL_REP_PC_BUDDYLIST_INFO_SUCC {
                 iID: unused!(),
                 iPCUID: unused!(),
                 iListNum: 0, // we don't need to chunk the buddy list
-                iBuddyCnt: buddy_info.len() as i8,
+                iBuddyCnt: entries.len() as i8,
             },
         );
 
-        for entry in buddy_info {
-            let buddy_pkt: sBuddyBaseInfo = entry.into();
-            buddy_list_pkt.push(&buddy_pkt);
+        for entry in &entries {
+            buddy_list_pkt.push(entry);
         }
 
         let buddy_list_pkt = buddy_list_pkt.build()?;
-        client.send_payload(buddy_list_pkt);
-        player.buddy_list_synced = true;
+        pkts.queue_payload(buddy_list_pkt);
+
+        state_lock
+            .lock()
+            .await
+            .get_player_mut(pc_id)?
+            .initial_load_done = true;
     }
 
+    pkts.send_all();
     Ok(())
 }
 

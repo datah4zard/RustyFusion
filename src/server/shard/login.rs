@@ -312,15 +312,15 @@ pub fn login_get_buddy_state(pkt: Packet, state: &mut ShardServerState) -> FFRes
             Severity::Warning,
             format!("Couldn't find player with UID {}", pc_uid),
         ))?;
-    let player = state.get_player(pc_id).unwrap();
-    let buddy_info = player.get_all_buddy_info();
 
-    // identical on the wire across protocols; aBuddyState is merely u8 vs i8
+    // only difference between 104 and others is the sign of aBuddyState, so we can just use the 104 struct
     let mut resp = v0104::sP_FE2CL_REP_GET_BUDDY_STATE_SUCC {
         aBuddyID: [0; SIZEOF_BUDDYLIST_SLOT as usize],
         aBuddyState: [0; SIZEOF_BUDDYLIST_SLOT as usize],
     };
-    for (i, buddy_uid) in buddy_info.iter().map(|info| info.pc_uid).enumerate() {
+
+    let player = state.get_player(pc_id).unwrap();
+    for (i, buddy_uid) in player.get_related_uids_with_slots() {
         let online = query_results.get(&buddy_uid).is_some_and(|v| *v != 0);
         resp.aBuddyState[i] = if online { 1 } else { 0 };
         if online {

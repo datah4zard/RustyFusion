@@ -308,114 +308,90 @@ pub struct PreWarpData {
     pub position: Position,
 }
 
-#[derive(Debug, Clone)]
-pub struct BuddyListEntry {
-    pub pc_uid: i64,
-    pub first_name: String,
-    pub last_name: String,
-    pub style: PlayerStyle,
-    pub name_check: PlayerNameStatus,
-    pub free_chat: bool,
-    pub blocked: bool,
-}
-impl BuddyListEntry {
-    pub fn new(player: &Player) -> Self {
-        Self {
-            pc_uid: player.uid,
-            first_name: player.first_name.clone(),
-            last_name: player.last_name.clone(),
-            style: player.style.unwrap(),
-            name_check: player.flags.name_check,
-            free_chat: true,
-            blocked: false,
-        }
-    }
-}
-impl From<BuddyListEntry> for sBuddyBaseInfo {
-    fn from(value: BuddyListEntry) -> Self {
-        Self {
-            iID: unused!(),      // updated later
-            iPCState: unused!(), // updated later
-            iPCUID: value.pc_uid,
-            bBlocked: value.blocked as i8,
-            bFreeChat: value.free_chat as i8,
-            szFirstName: util::encode_utf16(&value.first_name).unwrap(),
-            szLastName: util::encode_utf16(&value.last_name).unwrap(),
-            iGender: value.style.gender,
-            iNameCheckFlag: value.name_check as i8,
-        }
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RelationshipStatus {
+    Buddies,
+    Blocked,
 }
 
 #[derive(Debug, Clone)]
-struct BuddyList {
-    slots: [Option<BuddyListEntry>; SIZEOF_BUDDYLIST_SLOT as usize],
+struct Relationship {
+    pc_uid: i64,
+    status: RelationshipStatus,
 }
-impl Default for BuddyList {
+
+#[derive(Debug, Clone)]
+struct RelationshipList {
+    relationships: [Option<Relationship>; SIZEOF_BUDDYLIST_SLOT as usize],
+}
+impl Default for RelationshipList {
     fn default() -> Self {
         Self {
-            slots: std::array::from_fn(|_| None),
+            relationships: std::array::from_fn(|_| None),
         }
     }
 }
-impl BuddyList {
-    fn get_buddy_slot_number(&self, pc_uid: i64) -> Option<usize> {
-        self.slots
+impl RelationshipList {
+    fn get_by_pc_uid(&self, pc_uid: i64) -> Option<&Relationship> {
+        self.relationships
             .iter()
-            .position(|entry| entry.as_ref().is_some_and(|entry| entry.pc_uid == pc_uid))
+            .filter_map(Option::as_ref)
+            .find(|relationship| relationship.pc_uid == pc_uid)
     }
 
-    fn is_buddies_with(&self, pc_uid: i64) -> bool {
-        self.get_buddy_slot_number(pc_uid).is_some()
+    fn find_available(&self) -> Option<usize> {
+        self.relationships.iter().position(Option::is_none)
     }
 
-    fn insert_buddy(&mut self, buddy: BuddyListEntry) -> FFResult<usize> {
-        if self.is_buddies_with(buddy.pc_uid) {
+    fn find_existing(&self, pc_uid: i64) -> Option<usize> {
+        self.relationships.iter().position(|relationship| {
+            relationship
+                .as_ref()
+                .is_some_and(|relationship| relationship.pc_uid == pc_uid)
+        })
+    }
+
+    fn add(&mut self, pc_uid: i64, status: RelationshipStatus) -> FFResult<usize> {
+        if let Some(index) = self.find_existing(pc_uid) {
+            self.relationships[index] = Some(Relationship { pc_uid, status });
+            return Ok(index);
+        }
+
+        let Some(index) = self.find_available() else {
             return Err(FFError::build(
                 Severity::Warning,
-                format!("Player {} is already on the buddy list", buddy.pc_uid),
+                "Buddy list is full".to_string(),
             ));
-        }
+        };
 
-        for (idx, slot) in self.slots.iter_mut().enumerate() {
-            if slot.is_none() {
-                *slot = Some(buddy);
-                return Ok(idx);
-            }
-        }
-
-        Err(FFError::build(
-            Severity::Warning,
-            "No free buddy slots".to_string(),
-        ))
+        self.relationships[index] = Some(Relationship { pc_uid, status });
+        Ok(index)
     }
 
-    fn erase_buddy(&mut self, pc_uid: i64) -> FFResult<usize> {
-        let idx = self.get_buddy_slot_number(pc_uid).ok_or(FFError::build(
-            Severity::Warning,
-            format!("Player {} is not on the buddy list", pc_uid),
-        ))?;
-        self.slots[idx] = None;
-        Ok(idx)
+    fn remove(&mut self, pc_uid: i64) -> Option<usize> {
+        let index = self.find_existing(pc_uid)?;
+        self.relationships[index] = None;
+        Some(index)
     }
 
-    fn block_buddy(&mut self, pc_uid: i64) -> FFResult<usize> {
-        let idx = self.get_buddy_slot_number(pc_uid).ok_or(FFError::build(
-            Severity::Warning,
-            format!("Player {} is not on the buddy list", pc_uid),
-        ))?;
-        self.slots[idx].as_mut().unwrap().blocked = true;
-        Ok(idx)
-    }
-
-    fn get_num_buddies(&self) -> usize {
-        self.slots.iter().filter(|entry| entry.is_some()).count()
-    }
-
-    fn get_all_entries(&self) -> Vec<BuddyListEntry> {
-        self.slots
+    fn uids(&self, status: RelationshipStatus) -> Vec<i64> {
+        self.relationships
             .iter()
-            .filter_map(|entry| entry.as_ref().cloned())
+            .filter_map(Option::as_ref)
+            .filter(|relationship| relationship.status == status)
+            .map(|relationship| relationship.pc_uid)
+            .collect()
+    }
+
+    fn pairs(&self) -> Vec<(usize, i64)> {
+        self.relationships
+            .iter()
+            .enumerate()
+            .filter_map(|(index, relationship)| {
+                relationship
+                    .as_ref()
+                    .map(|relationship| (index, relationship.pc_uid))
+            })
             .collect()
     }
 }
@@ -454,8 +430,8 @@ pub struct Player {
     fusion_matter: u32,
     nano_potions: u32,
     weapon_boosts: u32,
-    pub buddy_list_synced: bool,
-    buddy_list: BuddyList,
+    pub initial_load_done: bool,
+    relationship_list: RelationshipList,
     pub buddy_offered_to: Option<i64>,
     pub buddy_warp_available_at: Option<u32>,
     last_heal_time: Option<SystemTime>,
@@ -1446,41 +1422,60 @@ impl Player {
     }
 
     pub fn is_buddies_with(&self, pc_uid: i64) -> bool {
-        self.buddy_list.is_buddies_with(pc_uid)
+        self.relationship_list
+            .get_by_pc_uid(pc_uid)
+            .is_some_and(|r| r.status == RelationshipStatus::Buddies)
     }
 
-    pub fn add_buddy(&mut self, buddy_info: BuddyListEntry) -> FFResult<usize> {
-        self.buddy_list.insert_buddy(buddy_info)
+    pub fn add_buddy(&mut self, pc_uid: i64) -> FFResult<usize> {
+        self.relationship_list
+            .add(pc_uid, RelationshipStatus::Buddies)
     }
 
     pub fn remove_buddy(&mut self, pc_uid: i64) -> FFResult<usize> {
-        self.buddy_list.erase_buddy(pc_uid)
+        if let Some(index) = self.relationship_list.remove(pc_uid) {
+            Ok(index)
+        } else {
+            Err(FFError::build(
+                Severity::Warning,
+                "Buddy not found".to_string(),
+            ))
+        }
     }
 
     pub fn block_player(&mut self, pc_uid: i64) -> FFResult<usize> {
-        self.buddy_list.block_buddy(pc_uid)
+        self.relationship_list
+            .add(pc_uid, RelationshipStatus::Blocked)
     }
 
-    pub fn get_num_buddies(&self) -> usize {
-        self.buddy_list.get_num_buddies()
+    pub fn get_buddy_info(&self) -> sBuddyBaseInfo {
+        sBuddyBaseInfo {
+            iID: self.id.unwrap_or(0),
+            iPCUID: self.get_uid(),
+            bBlocked: 0,
+            bFreeChat: 1,
+            iPCState: self.get_state_bit_flag(),
+            szFirstName: util::encode_utf16(&self.first_name).unwrap(),
+            szLastName: util::encode_utf16(&self.last_name).unwrap(),
+            iGender: self.get_style().iGender,
+            iNameCheckFlag: self.flags.name_check as i8,
+        }
     }
 
-    pub fn get_all_buddy_info(&self) -> Vec<BuddyListEntry> {
-        self.buddy_list.get_all_entries()
+    pub fn has_room_for_buddy(&self) -> bool {
+        self.relationship_list.find_available().is_some()
     }
 
     pub fn get_buddy_uids(&self) -> Vec<i64> {
-        self.get_all_buddy_info()
-            .iter()
-            .filter_map(|b| if !b.blocked { Some(b.pc_uid) } else { None })
-            .collect()
+        self.relationship_list.uids(RelationshipStatus::Buddies)
     }
 
     pub fn get_blocked_uids(&self) -> Vec<i64> {
-        self.get_all_buddy_info()
-            .iter()
-            .filter_map(|b| if b.blocked { Some(b.pc_uid) } else { None })
-            .collect()
+        self.relationship_list.uids(RelationshipStatus::Blocked)
+    }
+
+    pub fn get_related_uids_with_slots(&self) -> Vec<(usize, i64)> {
+        self.relationship_list.pairs()
     }
 
     pub fn get_payzone_flag(&self) -> bool {
@@ -2149,7 +2144,6 @@ impl Display for Player {
         )
     }
 }
-
 #[derive(Debug)]
 pub enum PlayerSearchQuery {
     ByID(i32),

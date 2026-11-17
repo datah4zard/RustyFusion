@@ -1,7 +1,7 @@
 use crate::{
     chunk::InstanceID,
     defines::*,
-    entity::{BuddyListEntry, Entity, EntityID, PlayerSearchQuery},
+    entity::{Entity, EntityID, PlayerSearchQuery},
     error::{codes::BuddyWarpErr, *},
     net::{
         packet::{PacketID::*, *},
@@ -25,8 +25,7 @@ pub fn get_buddy_state(clients: &ClientMap, state: &mut ShardServerState) -> FFR
         aBuddyUID: [0; 50],
     };
 
-    let buddy_info = player.get_all_buddy_info();
-    for (i, buddy_uid) in buddy_info.iter().map(|info| info.pc_uid).enumerate() {
+    for (i, buddy_uid) in player.get_related_uids_with_slots() {
         req.aBuddyUID[i] = buddy_uid;
     }
 
@@ -66,7 +65,7 @@ pub fn request_make_buddy(
         ));
     }
 
-    if player.get_num_buddies() >= SIZEOF_BUDDYLIST_SLOT as usize {
+    if !player.has_room_for_buddy() {
         return Err(FFError::build(
             Severity::Warning,
             format!("{} has too many buddies", player),
@@ -92,7 +91,7 @@ pub fn request_make_buddy(
         ));
     }
 
-    if buddy.get_num_buddies() >= SIZEOF_BUDDYLIST_SLOT as usize {
+    if !buddy.has_room_for_buddy() {
         // instant deny
         let deny_pkt = sP_FE2CL_REP_ACCEPT_MAKE_BUDDY_FAIL {
             iBuddyID: buddy_id,
@@ -124,7 +123,7 @@ pub fn find_name_make_buddy(
     let pc_id = client.get_player_id()?;
     let player = state.get_player(pc_id)?;
     let pc_uid = player.get_uid();
-    if player.get_num_buddies() >= SIZEOF_BUDDYLIST_SLOT as usize {
+    if !player.has_room_for_buddy() {
         return Err(FFError::build(
             Severity::Warning,
             format!("{} has too many buddies", player),
@@ -151,7 +150,7 @@ pub fn find_name_make_buddy(
         ));
     }
 
-    if buddy.get_num_buddies() >= SIZEOF_BUDDYLIST_SLOT as usize {
+    if !buddy.has_room_for_buddy() {
         // instant deny
         let deny_pkt = sP_FE2CL_REP_PC_FIND_NAME_MAKE_BUDDY_FAIL {
             iErrorCode: ERROR_CODE_BUDDY_DENY,
@@ -187,13 +186,15 @@ pub fn accept_make_buddy(
 
     let pc_id = client.get_player_id()?;
     let player = state.get_player(pc_id)?;
-    let player_buddy_info = BuddyListEntry::new(player);
-    let pc_uid = state.get_player(pc_id)?.get_uid();
+    let pc_uid = player.get_uid();
+    let player_info = player.get_buddy_info();
+
     let buddy_id = pkt.iBuddyID;
     let accepted = pkt.iAcceptFlag == 1;
 
     let buddy = state.get_player_mut(buddy_id)?;
     let buddy_uid = buddy.get_uid();
+    let buddy_info = buddy.get_buddy_info();
     if buddy.buddy_offered_to != Some(pc_uid) {
         return Err(FFError::build(
             Severity::Warning,
@@ -202,9 +203,13 @@ pub fn accept_make_buddy(
     }
 
     buddy.buddy_offered_to = None;
+    if buddy.is_buddies_with(pc_uid) {
+        // no-op regardless if it's accept or deny
+        return Ok(());
+    }
 
     (|| {
-        let buddy = state.get_player_mut(buddy_id).unwrap(); // re-borrow
+        let buddy = state.get_player_mut(buddy_id).unwrap();
         if !accepted {
             // this failure will be caught and the deny packet will be sent
             return Err(FFError::build(
@@ -215,8 +220,8 @@ pub fn accept_make_buddy(
 
         // player -> buddy
         let pkt_buddy = sP_FE2CL_REP_ACCEPT_MAKE_BUDDY_SUCC {
-            iBuddySlot: buddy.add_buddy(player_buddy_info.clone())? as i8,
-            BuddyInfo: player_buddy_info.into(),
+            iBuddySlot: buddy.add_buddy(pc_uid)? as i8,
+            BuddyInfo: player_info,
         };
 
         buddy
@@ -225,11 +230,10 @@ pub fn accept_make_buddy(
             .send_packet(P_FE2CL_REP_ACCEPT_MAKE_BUDDY_SUCC, &pkt_buddy);
 
         // buddy -> player
-        let buddy_buddy_info = BuddyListEntry::new(buddy);
         let player = state.get_player_mut(pc_id).unwrap();
         let pkt_player = sP_FE2CL_REP_ACCEPT_MAKE_BUDDY_SUCC {
-            iBuddySlot: player.add_buddy(buddy_buddy_info.clone())? as i8,
-            BuddyInfo: buddy_buddy_info.into(),
+            iBuddySlot: player.add_buddy(buddy_uid)? as i8,
+            BuddyInfo: buddy_info,
         };
 
         clients
@@ -269,9 +273,9 @@ pub fn find_name_accept_buddy(
 
     let pc_id = client.get_player_id()?;
     let player = state.get_player(pc_id)?;
-    let player_buddy_info = BuddyListEntry::new(player);
+    let player_info = player.get_buddy_info();
     let pc_uid = player.get_uid();
-    if player.get_num_buddies() >= SIZEOF_BUDDYLIST_SLOT as usize {
+    if !player.has_room_for_buddy() {
         return Err(FFError::build(
             Severity::Warning,
             format!("{} has too many buddies", player),
@@ -294,7 +298,12 @@ pub fn find_name_accept_buddy(
             format!("{} did not send buddy request to player {}", buddy, pc_id),
         ));
     }
+
     buddy.buddy_offered_to = None;
+    if buddy.is_buddies_with(pc_uid) {
+        // no-op regardless if it's accept or deny
+        return Ok(());
+    }
 
     (|| {
         let buddy = state.get_player_mut(buddy_id).unwrap(); // re-borrow
@@ -308,8 +317,8 @@ pub fn find_name_accept_buddy(
 
         // player -> buddy
         let pkt_buddy = sP_FE2CL_REP_ACCEPT_MAKE_BUDDY_SUCC {
-            iBuddySlot: buddy.add_buddy(player_buddy_info.clone())? as i8,
-            BuddyInfo: player_buddy_info.into(),
+            iBuddySlot: buddy.add_buddy(pc_uid)? as i8,
+            BuddyInfo: player_info,
         };
 
         buddy
@@ -318,11 +327,11 @@ pub fn find_name_accept_buddy(
             .send_packet(P_FE2CL_REP_ACCEPT_MAKE_BUDDY_SUCC, &pkt_buddy);
 
         // buddy -> player
-        let buddy_buddy_info = BuddyListEntry::new(buddy);
+        let buddy_info = buddy.get_buddy_info();
         let player = state.get_player_mut(pc_id).unwrap();
         let pkt_player = sP_FE2CL_REP_ACCEPT_MAKE_BUDDY_SUCC {
-            iBuddySlot: player.add_buddy(buddy_buddy_info.clone())? as i8,
-            BuddyInfo: buddy_buddy_info.into(),
+            iBuddySlot: player.add_buddy(buddy_uid)? as i8,
+            BuddyInfo: buddy_info,
         };
 
         clients
